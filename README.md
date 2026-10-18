@@ -278,14 +278,18 @@ A pré-visualização deverá utilizar uma representação apropriada da imagem,
 ### Pré-requisitos
 
 - Sistema Linux para o ambiente inicial de desenvolvimento.
-- Compilador C++ compatível com a versão do Qt selecionada.
-- CMake.
-- Qt 6 Widgets e módulos necessários à aplicação.
+- Compilador C++20, como GCC ou Clang.
+- CMake 3.21 ou mais recente.
+- Pacote de desenvolvimento do Qt 6, incluindo Qt Widgets e Qt Test. No Fedora, instale `qt6-qtbase-devel` (o pacote runtime do Qt sozinho não inclui os arquivos CMake necessários para compilar).
 - Bibliotecas de desenvolvimento da libgphoto2.
 - SQLite.
 - Git.
 
-As versões mínimas e as dependências específicas da distribuição serão documentadas conforme a configuração do build for validada.
+No Fedora, instale as ferramentas e os componentes Qt com:
+
+```bash
+sudo dnf install cmake gcc-c++ qt6-qtbase-devel
+```
 
 ### Compilação
 
@@ -296,7 +300,10 @@ git clone https://github.com/vinicius-vs/AstroCapture.git
 cd AstroCapture
 
 cmake -S . -B build
-cmake --build build
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+./build/astrocapture
+
 ```
 
 O comando para executar a aplicação dependerá do nome do executável definido no `CMakeLists.txt`.
