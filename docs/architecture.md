@@ -493,16 +493,21 @@ O sistema deverá registrar eventos importantes para diagnóstico e recuperaçã
 Informações previstas:
 
 - Data e hora.
+- Severidade (`INFO`, `WARNING` ou `ERROR`) e nome do evento.
+- Mensagem operacional objetiva.
 - Sessão e sequência relacionadas.
+- Quadro relacionado, quando aplicável.
 - Operação executada.
 - Estado anterior e estado resultante, quando relevante.
 - Código de erro, quando disponível.
-- Descrição da falha.
-- Caminho do arquivo envolvido, quando aplicável.
+- Detalhes técnicos da falha, quando disponíveis.
+- Caminho do arquivo relativo à raiz de dados, quando aplicável.
 
-Os logs de aquisição poderão ser organizados por noite dentro da pasta da sessão.
+Os eventos serão registrados em JSON Lines no arquivo `<AppDataLocation>/logs/astrocapture.jsonl`. A escrita será síncrona e serializada entre threads. O arquivo ativo terá limite de 10 MiB; ao atingir o limite, serão mantidas até cinco cópias numeradas. Falhas ao gravar serão propagadas ao chamador.
 
-Os registros deverão ajudar a investigar problemas de conexão, exposição, transferência, gravação e persistência.
+As configurações de captura serão registradas somente nos campos tipados previstos (tipo, exposição, ISO quando disponível, modo e quantidade planejada). Não serão registrados payloads arbitrários, variáveis de ambiente ou credenciais.
+
+Os registros deverão ajudar a investigar problemas de conexão, exposição, transferência, gravação e persistência. `INFO` representa operação normal; `WARNING`, uma condição recuperável ou que requer atenção; `ERROR`, uma falha técnica.
 
 ## 12. Testabilidade
 

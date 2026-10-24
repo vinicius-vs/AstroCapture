@@ -487,6 +487,8 @@ Os registros devem incluir:
 
 As mensagens devem ser úteis para diagnóstico sem registrar informações desnecessárias. Erros técnicos detalhados podem ser mantidos nos logs, enquanto a interface apresenta mensagens objetivas ao usuário.
 
+Os logs usam JSON Lines no arquivo `<AppDataLocation>/logs/astrocapture.jsonl`, com timestamps UTC em microssegundos e severidades `INFO`, `WARNING` e `ERROR`. Cada evento pode incluir IDs de sessão, sequência e quadro, operação, estados anterior/atual, código e detalhes técnicos, caminho relativo ao diretório de dados e configurações tipadas da captura. A escrita é serializada entre threads; arquivos de 10 MiB são rotacionados, mantendo até cinco backups. Falhas de gravação são propagadas. Não registrar payloads arbitrários, variáveis de ambiente ou credenciais.
+
 ## 17. Critérios de aceitação
 
 O fluxo de captura será considerado pronto para a primeira versão quando:
