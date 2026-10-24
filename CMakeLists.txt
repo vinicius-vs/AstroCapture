@@ -15,6 +15,7 @@ add_executable(astrocapture
     src/app/main.cpp
     src/domain/capture_entities.cpp
     src/domain/capture_entities.h
+    src/domain/camera.h
     src/domain/logging/log_event.h
     src/domain/logging/logging_service.h
     src/domain/repositories/capture_run_repository.h
@@ -87,6 +88,20 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME astrocapture_domain_tests COMMAND astrocapture_domain_tests)
+
+    add_executable(astrocapture_camera_tests
+        src/domain/camera.h
+        tests/unit/test_camera.cpp
+    )
+
+    target_include_directories(astrocapture_camera_tests PRIVATE src)
+    target_link_libraries(astrocapture_camera_tests PRIVATE Qt6::Test)
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(astrocapture_camera_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME astrocapture_camera_tests COMMAND astrocapture_camera_tests)
 
     add_executable(astrocapture_persistence_tests
         src/infrastructure/persistence/sqlite_database.cpp
