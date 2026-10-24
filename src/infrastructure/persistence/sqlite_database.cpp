@@ -12,7 +12,7 @@
 namespace infrastructure {
 namespace {
 
-constexpr int CurrentSchemaVersion = 1;
+constexpr int CurrentSchemaVersion = 2;
 
 void executeSql(QSqlDatabase& database, const QString& sql, const QString& operation)
 {
@@ -120,6 +120,24 @@ void applyInitialMigration(QSqlDatabase& database)
     executeSql(database, QStringLiteral("PRAGMA user_version = 1"), QStringLiteral("Recording SQLite schema version failed"));
 }
 
+void applyOperationalSessionStateMigration(QSqlDatabase& database)
+{
+    executeSql(
+        database,
+        QStringLiteral(
+            "ALTER TABLE sessions ADD COLUMN is_open INTEGER NOT NULL DEFAULT 0 "
+            "CHECK (is_open IN (0, 1))"),
+        QStringLiteral("Adding operational session state failed"));
+    executeSql(
+        database,
+        QStringLiteral("CREATE INDEX idx_sessions_open_target ON sessions(is_open, target_id)"),
+        QStringLiteral("Creating operational session state index failed"));
+    executeSql(
+        database,
+        QStringLiteral("PRAGMA user_version = 2"),
+        QStringLiteral("Recording SQLite schema version failed"));
+}
+
 } // namespace
 
 SqliteDatabase::SqliteDatabase(QString filePath)
@@ -193,25 +211,28 @@ void SqliteDatabase::migrate()
     if (version > CurrentSchemaVersion) {
         throw std::runtime_error("SQLite database schema is newer than this application supports");
     }
-    if (version == CurrentSchemaVersion) {
-        return;
-    }
-    if (version != 0) {
-        throw std::runtime_error("Unsupported SQLite database schema version");
-    }
-
-    executeSql(database_, QStringLiteral("BEGIN IMMEDIATE"), QStringLiteral("Starting SQLite migration failed"));
-    try {
-        applyInitialMigration(database_);
-        executeSql(database_, QStringLiteral("COMMIT"), QStringLiteral("Committing SQLite migration failed"));
-    } catch (const std::exception& error) {
-        const std::string migrationError = error.what();
-        try {
-            executeSql(database_, QStringLiteral("ROLLBACK"), QStringLiteral("Rolling back SQLite migration failed"));
-        } catch (const std::exception& rollbackError) {
-            throw std::runtime_error(migrationError + "; " + rollbackError.what());
+    for (int migrationVersion = version; migrationVersion < CurrentSchemaVersion; ++migrationVersion) {
+        if (migrationVersion != 0 && migrationVersion != 1) {
+            throw std::runtime_error("Unsupported SQLite database schema version");
         }
-        throw;
+
+        executeSql(database_, QStringLiteral("BEGIN IMMEDIATE"), QStringLiteral("Starting SQLite migration failed"));
+        try {
+            if (migrationVersion == 0) {
+                applyInitialMigration(database_);
+            } else {
+                applyOperationalSessionStateMigration(database_);
+            }
+            executeSql(database_, QStringLiteral("COMMIT"), QStringLiteral("Committing SQLite migration failed"));
+        } catch (const std::exception& error) {
+            const std::string migrationError = error.what();
+            try {
+                executeSql(database_, QStringLiteral("ROLLBACK"), QStringLiteral("Rolling back SQLite migration failed"));
+            } catch (const std::exception& rollbackError) {
+                throw std::runtime_error(migrationError + "; " + rollbackError.what());
+            }
+            throw;
+        }
     }
 }
 

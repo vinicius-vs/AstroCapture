@@ -118,12 +118,13 @@ O sistema deve:
 
 1. Validar os campos obrigatórios.
 2. Gerar um identificador único para a sessão.
-3. Criar o registro no SQLite.
+3. Persistir o alvo e a sessão aberta no SQLite em uma única transação.
 4. Criar a estrutura de diretórios da sessão.
 5. Registrar a noite de captura quando a primeira operação for iniciada.
 6. Abrir a tela de captura.
 
 A criação da sessão não deve exigir uma câmera conectada. Isso permite preparar sessões e utilizar o simulador.
+O estado aberto/fechado é operacional e independente da etapa de trabalho da sessão. Ele permanece persistido entre reinicializações; fechar e reabrir uma sessão não altera sua etapa. Abrir ou fechar uma sessão já nesse estado é idempotente.
 
 ### 5.2 Abrir sessão existente
 

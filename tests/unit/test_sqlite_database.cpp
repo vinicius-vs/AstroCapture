@@ -41,7 +41,7 @@ private slots:
             QVERIFY(!database.connection().isOpen());
             database.open();
 
-            QCOMPARE(scalarInt(database.connection(), QStringLiteral("PRAGMA user_version")), 1);
+            QCOMPARE(scalarInt(database.connection(), QStringLiteral("PRAGMA user_version")), 2);
             QCOMPARE(
                 scalarInt(
                     database.connection(),
@@ -58,11 +58,22 @@ private slots:
                         "'idx_frames_capture_run_id', 'idx_frames_state')")),
                 4);
             QCOMPARE(scalarInt(database.connection(), QStringLiteral("PRAGMA foreign_keys")), 1);
+            QCOMPARE(
+                scalarInt(
+                    database.connection(),
+                    QStringLiteral(
+                        "SELECT count(*) FROM pragma_table_info('sessions') WHERE name = 'is_open'")),
+                1);
+            QCOMPARE(
+                scalarInt(
+                    database.connection(),
+                    QStringLiteral("SELECT count(*) FROM sqlite_master WHERE name = 'idx_sessions_open_target'")),
+                1);
         }
 
         SqliteDatabase reopenedDatabase(databasePath);
         reopenedDatabase.open();
-        QCOMPARE(scalarInt(reopenedDatabase.connection(), QStringLiteral("PRAGMA user_version")), 1);
+        QCOMPARE(scalarInt(reopenedDatabase.connection(), QStringLiteral("PRAGMA user_version")), 2);
     }
 
     void enforcesDomainConstraintsAndRestrictsReferencedDeletes()
@@ -115,13 +126,47 @@ private slots:
             SqliteDatabase database(databasePath);
             database.open();
             QSqlQuery query(database.connection());
-            query.prepare(QStringLiteral("PRAGMA user_version = 2"));
+            query.prepare(QStringLiteral("PRAGMA user_version = 3"));
             database.execute(query);
         }
 
         SqliteDatabase database(databasePath);
         QVERIFY_EXCEPTION_THROWN(database.open(), std::runtime_error);
         QVERIFY(!database.connection().isOpen());
+    }
+
+    void migratesExistingVersionOneSessionsAsClosed()
+    {
+        QTemporaryDir temporaryDirectory;
+        QVERIFY(temporaryDirectory.isValid());
+        const QString databasePath = QDir(temporaryDirectory.path()).filePath(QStringLiteral("version-one.sqlite3"));
+        const QString connectionName = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        {
+            QSqlDatabase legacy = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+            legacy.setDatabaseName(databasePath);
+            QVERIFY(legacy.open());
+            QSqlQuery query(legacy);
+            QVERIFY(query.exec(QStringLiteral(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, target_id TEXT, name TEXT, "
+                "stage TEXT, created_at TEXT, updated_at TEXT)")));
+            QVERIFY(query.exec(QStringLiteral(
+                "INSERT INTO sessions VALUES ('session-1', 'target-1', 'Orion', 'Capture', "
+                "'2026-10-24T12:00:00Z', '2026-10-24T12:00:00Z')")));
+            QVERIFY(query.exec(QStringLiteral("PRAGMA user_version = 1")));
+            query.clear();
+            legacy.close();
+        }
+        QSqlDatabase::removeDatabase(connectionName);
+
+        SqliteDatabase migratedDatabase(databasePath);
+        migratedDatabase.open();
+        QCOMPARE(scalarInt(migratedDatabase.connection(), QStringLiteral("PRAGMA user_version")), 2);
+        QCOMPARE(
+            scalarInt(
+                migratedDatabase.connection(),
+                QStringLiteral("SELECT is_open FROM sessions WHERE id = 'session-1'")),
+            0);
     }
 
     void rollsBackFailedInitialMigration()

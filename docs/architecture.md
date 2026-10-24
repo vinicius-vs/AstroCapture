@@ -159,6 +159,7 @@ Informações principais:
 
 - Obrigatórios: identificador, identificador do alvo, nome, etapa atual, data de criação e data da última atualização.
 - Etapas: `Capture`, `Stacking`, `Editing` e `Finished`. A etapa representa o progresso no fluxo de trabalho; qualquer mudança entre etapas válidas é permitida, sem impor uma ordem fixa. Abrir ou fechar uma sessão é uma responsabilidade operacional distinta, não outro estado de domínio.
+- A condição operacional aberta/fechada é persistida separadamente da etapa. Sessões novas começam abertas e essa condição permanece após reiniciar o aplicativo até fechamento explícito.
 
 **CaptureRun**
 
@@ -396,6 +397,8 @@ O SQLite será utilizado para persistir os metadados e o histórico da aplicaç�
 O acesso será feito pelo módulo Qt SQL com o driver `QSQLITE`. A aplicação utilizará um banco único chamado `astrocapture.sqlite3` na pasta de dados do usuário indicada por `QStandardPaths::AppDataLocation`.
 
 As migrações serão versionadas por `PRAGMA user_version` e executadas em transações. Os enums serão armazenados como texto, com restrições `CHECK` para os valores válidos. Timestamps serão serializados em ISO 8601 UTC. Chaves estrangeiras impedirão exclusões que deixem registros dependentes sem referência.
+
+Os contratos `SessionRepository` e `CaptureRunRepository` pertencem ao domínio; seus adaptadores SQLite ficam na infraestrutura. A criação de sessão persiste o alvo e a sessão na mesma transação. Consultas individuais retornam ausência explícita; listagens são filtradas pelo identificador do pai e ordenadas por data crescente e identificador. Atualizações de estágio e estado de sequência validam as regras de domínio antes de persistir.
 
 Tabelas previstas:
 
