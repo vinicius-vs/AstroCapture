@@ -11,6 +11,8 @@ find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets)
 
 add_executable(astrocapture
     src/app/main.cpp
+    src/domain/capture_entities.cpp
+    src/domain/capture_entities.h
     src/presentation/main_window.cpp
     src/presentation/main_window.h
 )
@@ -50,4 +52,19 @@ if(BUILD_TESTING)
     set_tests_properties(astrocapture_tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
+
+    add_executable(astrocapture_domain_tests
+        src/domain/capture_entities.cpp
+        src/domain/capture_entities.h
+        tests/unit/test_capture_entities.cpp
+    )
+
+    target_include_directories(astrocapture_domain_tests PRIVATE src)
+    target_link_libraries(astrocapture_domain_tests PRIVATE Qt6::Test)
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(astrocapture_domain_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME astrocapture_domain_tests COMMAND astrocapture_domain_tests)
 endif()

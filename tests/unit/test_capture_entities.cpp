@@ -1,0 +1,236 @@
+#include "domain/capture_entities.h"
+
+#include <QtTest>
+
+using namespace std::chrono_literals;
+using namespace domain;
+
+class CaptureEntitiesTest final : public QObject
+{
+    Q_OBJECT
+
+private:
+    static CaptureSettings finiteSettings()
+    {
+        return {
+            FrameType::Light,
+            5s,
+            800,
+            CaptureMode::Finite,
+            3
+        };
+    }
+
+private slots:
+    void targetRequiresIdentifierAndName()
+    {
+        const Target target("target-1", "M42");
+        QCOMPARE(target.id(), std::string("target-1"));
+        QCOMPARE(target.name(), std::string("M42"));
+
+        QVERIFY_EXCEPTION_THROWN(Target("", "M42"), std::invalid_argument);
+        QVERIFY_EXCEPTION_THROWN(Target("target-1", ""), std::invalid_argument);
+    }
+
+    void sessionTracksWorkflowStageAndRejectsInvalidDates()
+    {
+        const Timestamp createdAt{1s};
+        Session session("session-1", "target-1", "Orion", SessionStage::Capture, createdAt, createdAt);
+
+        session.setStage(SessionStage::Stacking, createdAt + 1s);
+        QCOMPARE(session.stage(), SessionStage::Stacking);
+        QCOMPARE(session.updatedAt(), createdAt + 1s);
+        QCOMPARE(session.targetId(), std::string("target-1"));
+
+        QVERIFY_EXCEPTION_THROWN(
+            session.setStage(SessionStage::Editing, createdAt),
+            std::invalid_argument);
+        QVERIFY_EXCEPTION_THROWN(
+            Session("session-2", "target-1", "Orion", SessionStage::Capture, createdAt + 1s, createdAt),
+            std::invalid_argument);
+    }
+
+    void captureSettingsEnforceFiniteAndContinuousCounts()
+    {
+        finiteSettings().validate();
+
+        CaptureSettings continuous{
+            FrameType::Dark,
+            1s,
+            std::nullopt,
+            CaptureMode::Continuous,
+            std::nullopt
+        };
+        continuous.validate();
+
+        CaptureSettings finiteWithoutCount{
+            FrameType::Light,
+            1s,
+            std::nullopt,
+            CaptureMode::Finite,
+            std::nullopt
+        };
+        QVERIFY_EXCEPTION_THROWN(finiteWithoutCount.validate(), std::invalid_argument);
+
+        CaptureSettings continuousWithCount{
+            FrameType::Light,
+            1s,
+            std::nullopt,
+            CaptureMode::Continuous,
+            2
+        };
+        QVERIFY_EXCEPTION_THROWN(continuousWithCount.validate(), std::invalid_argument);
+    }
+
+    void captureRunOnlyAllowsDocumentedTransitions()
+    {
+        CaptureRun run(
+            "run-1",
+            "session-1",
+            std::chrono::year{2026} / 10 / 18,
+            finiteSettings());
+
+        QCOMPARE(run.state(), CaptureRunState::Ready);
+        run.start();
+        run.requestStop();
+        run.pause();
+        QCOMPARE(run.state(), CaptureRunState::Paused);
+        run.resume();
+        run.complete();
+        QCOMPARE(run.state(), CaptureRunState::Completed);
+        QVERIFY_EXCEPTION_THROWN(run.start(), std::logic_error);
+    }
+
+    void captureRunRejectsInvalidDateAndConfiguration()
+    {
+        QVERIFY_EXCEPTION_THROWN(
+            CaptureRun("run-1", "session-1", std::chrono::year{2026} / 2 / 30, finiteSettings()),
+            std::invalid_argument);
+
+        CaptureSettings invalidSettings{
+            FrameType::Light,
+            0us,
+            std::nullopt,
+            CaptureMode::Finite,
+            1
+        };
+        QVERIFY_EXCEPTION_THROWN(
+            CaptureRun("run-2", "session-1", std::chrono::year{2026} / 10 / 18, invalidSettings),
+            std::invalid_argument);
+    }
+
+    void captureRunCanRestorePersistedState()
+    {
+        const auto run = CaptureRun::restore(
+            "run-1",
+            "session-1",
+            std::chrono::year{2026} / 10 / 18,
+            finiteSettings(),
+            CaptureRunState::Paused);
+        QCOMPARE(run.state(), CaptureRunState::Paused);
+
+        QVERIFY_EXCEPTION_THROWN(
+            CaptureRun::restore(
+                "run-2",
+                "session-1",
+                std::chrono::year{2026} / 10 / 18,
+                finiteSettings(),
+                static_cast<CaptureRunState>(99)),
+            std::invalid_argument);
+    }
+
+    void continuousCaptureRunCannotBeCompletedWithoutACompletionCondition()
+    {
+        CaptureRun run(
+            "run-1",
+            "session-1",
+            std::chrono::year{2026} / 10 / 18,
+            CaptureSettings{
+                FrameType::Light,
+                1s,
+                std::nullopt,
+                CaptureMode::Continuous,
+                std::nullopt
+            });
+        run.start();
+
+        QVERIFY_EXCEPTION_THROWN(run.complete(), std::logic_error);
+        QCOMPARE(run.state(), CaptureRunState::Running);
+    }
+
+    void frameMustFinishTransferAndValidationBeforeCompletion()
+    {
+        Frame frame(
+            "frame-1",
+            "run-1",
+            FrameType::Light,
+            5s,
+            800);
+        const Timestamp capturedAt{2s};
+
+        QVERIFY_EXCEPTION_THROWN(frame.startValidation(), std::logic_error);
+        frame.startExposure(capturedAt);
+        frame.startTransfer();
+        frame.startValidation();
+        QVERIFY_EXCEPTION_THROWN(
+            frame.completeValidation("images/frame.cr2", 0),
+            std::invalid_argument);
+        frame.completeValidation("images/frame.cr2", 1024);
+
+        QCOMPARE(frame.state(), FrameState::Completed);
+        QCOMPARE(frame.capturedAt(), std::optional<Timestamp>(capturedAt));
+        QCOMPARE(frame.filePath(), std::optional<std::filesystem::path>("images/frame.cr2"));
+        QCOMPARE(frame.fileSize(), std::optional<std::uint64_t>(1024));
+    }
+
+    void frameCanRestorePersistedStateAndRejectInconsistentData()
+    {
+        const Timestamp capturedAt{2s};
+        auto frame = Frame::restore(
+            "frame-1",
+            "run-1",
+            FrameType::Light,
+            FrameState::Completed,
+            5s,
+            800,
+            capturedAt,
+            std::filesystem::path("images/frame.cr2"),
+            1024,
+            std::nullopt);
+
+        QCOMPARE(frame.state(), FrameState::Completed);
+        QVERIFY_EXCEPTION_THROWN(
+            Frame::restore(
+                "frame-2",
+                "run-1",
+                FrameType::Light,
+                FrameState::Completed,
+                5s,
+                800,
+                capturedAt,
+                std::nullopt,
+                std::nullopt,
+                std::nullopt),
+            std::invalid_argument);
+    }
+
+    void failedFrameCanBeRetriedWithoutStaleCaptureData()
+    {
+        Frame frame("frame-1", "run-1", FrameType::Dark);
+        frame.startExposure(Timestamp{3s});
+        frame.fail("camera transfer failed");
+
+        QCOMPARE(frame.state(), FrameState::Failed);
+        QVERIFY(frame.errorMessage().has_value());
+        QVERIFY_EXCEPTION_THROWN(frame.fail("again"), std::logic_error);
+
+        frame.retry();
+        QCOMPARE(frame.state(), FrameState::Pending);
+        QVERIFY(!frame.capturedAt().has_value());
+        QVERIFY(!frame.errorMessage().has_value());
+    }
+};
+
+QTEST_MAIN(CaptureEntitiesTest)
+
+#include "test_capture_entities.moc"

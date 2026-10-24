@@ -145,18 +145,20 @@ Contém as entidades, os estados e as regras centrais do sistema.
 
 Entidades previstas:
 
+**Target**
+
+Representa o alvo astronômico associado às sessões.
+
+- Obrigatórios: identificador estável e nome.
+
 **Session**
 
 Representa uma sessão de trabalho associada a um alvo astronômico.
 
 Informações principais:
 
-- Identificador.
-- Nome.
-- Alvo.
-- Fluxo de trabalho selecionado.
-- Estado.
-- Data de criação e última atualização.
+- Obrigatórios: identificador, identificador do alvo, nome, etapa atual, data de criação e data da última atualização.
+- Etapas: `Capture`, `Stacking`, `Editing` e `Finished`. A etapa representa o progresso no fluxo de trabalho; qualquer mudança entre etapas válidas é permitida, sem impor uma ordem fixa. Abrir ou fechar uma sessão é uma responsabilidade operacional distinta, não outro estado de domínio.
 
 **CaptureRun**
 
@@ -164,12 +166,10 @@ Representa uma sequência de captura executada em determinada noite.
 
 Informações principais:
 
-- Identificador.
-- Sessão associada.
-- Data da aquisição.
-- Configuração utilizada.
-- Estado da sequência.
-- Quantidade planejada e concluída.
+- Obrigatórios: identificador, sessão associada, data de aquisição, tipo de quadro, tempo de exposição, modo de execução e estado.
+- O ISO é opcional quando não disponível ou não aplicável.
+- A quantidade planejada é obrigatória e positiva para sequências finitas; não se aplica ao modo contínuo.
+- A quantidade concluída é derivada dos quadros associados, não armazenada como um segundo contador no domínio.
 
 **Frame**
 
@@ -177,14 +177,9 @@ Representa uma imagem individual adquirida pela câmera.
 
 Informações principais:
 
-- Identificador.
-- Sequência associada.
-- Tipo de quadro.
-- Caminho do arquivo.
-- Estado da captura.
-- ISO e tempo de exposição, quando disponíveis.
-- Data e hora da aquisição.
-- Tamanho do arquivo e informações de validação.
+- Obrigatórios: identificador, sequência associada, tipo de quadro e estado.
+- O tempo de exposição, ISO, data/hora da aquisição, caminho definitivo e tamanho do arquivo são opcionais enquanto o quadro ainda não os possui; exposição e ISO, quando informados, devem ser positivos.
+- Um quadro só pode passar a `Completed` depois de ter caminho definitivo não vazio e tamanho maior que zero.
 
 **CameraSettings**
 
