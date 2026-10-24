@@ -410,33 +410,27 @@ O banco não será utilizado para armazenar os bytes das imagens.
 
 ### 9.2 Sistema de arquivos
 
-As imagens serão organizadas por alvo, sessão, data e tipo de quadro.
+As imagens serão organizadas sob `<AppDataLocation>/images/`, por alvo, sessão, data e tipo de quadro. O caminho usa IDs estáveis codificados em percent-encoding UTF-8; o diretório do alvo também inclui um slug legível normalizado em NFC. Arquivos são nomeados pelo ID do quadro e preservam a extensão original.
 
 ```text
-AstroCaptureData/
-└── Targets/
-    └── M42/
-        └── Sessao01/
-            ├── session.json
-            ├── 2026-10-14/
-            │   ├── Light/
-            │   ├── Dark/
-            │   ├── Flat/
-            │   ├── Bias/
-            │   ├── DarkFlat/
-            │   └── Logs/
-            └── 2026-10-17/
-                ├── Light/
-                ├── Dark/
-                ├── Flat/
-                ├── Bias/
-                ├── DarkFlat/
-                └── Logs/
+<AppDataLocation>/
+├── astrocapture.sqlite3
+└── images/
+    └── targets/
+        └── <target-id>_<target-name-slug>/
+            └── sessions/
+                └── <session-id>/
+                    └── nights/
+                        └── YYYY-MM-DD/
+                            └── <FrameType>/
+                                └── <frame-id>[_NNN].<original-extension>
 ```
 
 A sessão permanece a mesma entre noites, mas cada noite possui sua própria sequência de aquisição e seus diretórios.
 
-O `session.json` será um manifesto auxiliar. O SQLite será a fonte principal dos metadados gerenciados pela aplicação.
+O slug preserva letras e números Unicode normalizados em NFC, substituindo sequências de outros caracteres por hífens e usando `target` quando resultar vazio. Se um caminho calculado já existir, acrescenta-se `_001`, `_002` e assim sucessivamente antes da extensão. O layout apenas calcula caminhos; não cria nem reserva arquivos. A gravação deve impedir sobrescritas em condições de concorrência.
+
+O SQLite será a fonte principal dos metadados gerenciados pela aplicação. Um eventual `session.json` será apenas manifesto auxiliar.
 
 ### 9.3 Integridade das imagens
 

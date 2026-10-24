@@ -19,6 +19,8 @@ O acesso ao SQLite será realizado pelo módulo Qt SQL com o driver `QSQLITE`. S
 
 Enums serão persistidos como texto e validados por restrições `CHECK`. Timestamps serão armazenados em ISO 8601 UTC. Chaves estrangeiras restringirão exclusões de registros ainda referenciados.
 
+As imagens serão armazenadas em `<AppDataLocation>/images/targets/<target-id>_<target-name-slug>/sessions/<session-id>/nights/<YYYY-MM-DD>/<FrameType>/`. IDs serão codificados em percent-encoding UTF-8 nos caminhos e nomes de arquivos utilizarão o ID do quadro com a extensão original. Se o nome existir, serão tentados sufixos `_001`, `_002` e seguintes antes da extensão. A geração de caminho não reserva o nome; a escrita deverá continuar protegida contra sobrescritas concorrentes.
+
 ## Justificativa
 
 - SQLite oferece transações e persistência local sem exigir um servidor de banco de dados.

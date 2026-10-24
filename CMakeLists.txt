@@ -15,6 +15,8 @@ add_executable(astrocapture
     src/domain/capture_entities.h
     src/infrastructure/persistence/sqlite_database.cpp
     src/infrastructure/persistence/sqlite_database.h
+    src/infrastructure/storage/storage_layout.cpp
+    src/infrastructure/storage/storage_layout.h
     src/presentation/main_window.cpp
     src/presentation/main_window.h
 )
@@ -84,4 +86,21 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME astrocapture_persistence_tests COMMAND astrocapture_persistence_tests)
+
+    add_executable(astrocapture_storage_tests
+        src/domain/capture_entities.cpp
+        src/domain/capture_entities.h
+        src/infrastructure/storage/storage_layout.cpp
+        src/infrastructure/storage/storage_layout.h
+        tests/unit/test_storage_layout.cpp
+    )
+
+    target_include_directories(astrocapture_storage_tests PRIVATE src)
+    target_link_libraries(astrocapture_storage_tests PRIVATE Qt6::Test)
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(astrocapture_storage_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME astrocapture_storage_tests COMMAND astrocapture_storage_tests)
 endif()

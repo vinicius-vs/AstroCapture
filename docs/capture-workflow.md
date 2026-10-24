@@ -304,28 +304,27 @@ A repetição de uma tentativa deve ser registrada. Um quadro concluído não po
 
 ### 10.1 Organização dos arquivos
 
-Uma organização possível para os dados é:
+Os dados da aplicação ficam na pasta de dados do usuário. A raiz das imagens é o subdiretório `images/`, organizado por identificadores estáveis de alvo, sessão e quadro:
 
 ```text
-AstroCaptureData/
-└── targets/
-    └── M42/
-        └── sessions/
-            └── <session-id>/
-                ├── session.json
-                ├── logs/
-                └── nights/
-                    └── 2026-10-17/
-                        ├── Light/
-                        ├── Dark/
-                        ├── Flat/
-                        ├── Bias/
-                        └── DarkFlat/
+<AppDataLocation>/
+├── astrocapture.sqlite3
+└── images/
+    └── targets/
+        └── <target-id>_<target-name-slug>/
+            └── sessions/
+                └── <session-id>/
+                    └── nights/
+                        └── YYYY-MM-DD/
+                            └── <FrameType>/
+                                └── <frame-id>[_NNN].<original-extension>
 ```
 
-O identificador da sessão deve ser usado internamente para evitar ambiguidades causadas por nomes de alvos iguais.
+O slug do alvo preserva letras e números Unicode normalizados em NFC; sequências de outros caracteres viram um hífen e hífens nas pontas são removidos. Se o nome não produzir um slug, usa-se `target`. Identificadores são codificados em percent-encoding UTF-8 para que não alterem a estrutura dos diretórios. A distinção entre IDs garante que alvos ou sessões com nomes iguais não misturem arquivos.
 
-Os diretórios de tipos de quadro podem ser criados sob demanda. A estrutura exata deve ser definida em conjunto com a implementação do armazenamento.
+O tipo do quadro é armazenado como metadado e seu diretório usa um dos nomes `Light`, `Dark`, `Flat`, `Bias` ou `DarkFlat`. O arquivo usa o ID do quadro e mantém a extensão original, inclusive a capitalização. A geração do caminho não cria diretórios nem arquivos.
+
+Se o nome calculado já existir, o layout procura o primeiro nome disponível acrescentando `_001`, `_002` e assim sucessivamente antes da extensão. A geração do caminho não reserva o nome; o componente que grava o arquivo deve continuar impedindo sobrescritas em caso de concorrência.
 
 ### 10.2 Gravação segura
 
