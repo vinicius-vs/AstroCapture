@@ -230,6 +230,8 @@ O arquivo temporário e o registro de estado permitem detectar operações incom
 
 O sistema deve preservar os bytes do arquivo original e sua extensão original. Para arquivos RAW da Canon T6, por exemplo, a extensão esperada normalmente é `.CR2`. O AstroCapture não deve converter ou recomprimir o arquivo original durante a captura.
 
+O armazenamento recebe um `QIODevice` legível em modo binário e copia os dados em fluxo até EOF, sem carregar a imagem inteira na memória. Quando o tamanho esperado for conhecido, ele deve corresponder ao total recebido. O componente grava em um temporário privado no diretório final, verifica que o arquivo pode ser lido e que seu tamanho corresponde ao total recebido, e publica o arquivo sem substituir um destino existente. Uma colisão concorrente avança para o próximo sufixo numérico. O quadro deve estar em `Validating`; o componente retorna o caminho absoluto e o tamanho, sem alterar ou persistir o quadro. O chamador só conclui e persiste o quadro após o retorno bem-sucedido.
+
 ### 8.2 Sequência com quantidade definida
 
 Em uma sequência de quantidade definida, o sistema repete o processo de captura até que todos os quadros tenham sido concluídos ou até que ocorra uma interrupção.
@@ -335,11 +337,11 @@ A implementação deve:
 - Utilizar nomes de arquivo únicos ou identificadores de quadro.
 - Gravar primeiro em arquivo temporário.
 - Verificar se a transferência e a gravação foram concluídas.
-- Renomear o temporário para o destino definitivo.
+- Promover o temporário ao destino definitivo sem substituir arquivos existentes; repetir com o próximo sufixo em caso de colisão concorrente.
 - Registrar o quadro como concluído no banco de dados somente após as verificações necessárias.
 - Registrar erros de disco cheio, falta de permissão ou transferência incompleta.
 
-A renomeação atômica depende do sistema de arquivos e deve ocorrer, preferencialmente, dentro do mesmo sistema de arquivos.
+A promoção usa a criação atômica de um hard link no mesmo diretório; assim, o destino só passa a existir depois de o arquivo completo ter sido validado, e um nome existente não é substituído. O temporário e o destino estão no mesmo sistema de arquivos.
 
 O banco SQLite e o sistema de arquivos não compartilham uma única transação. Portanto, a recuperação deve lidar explicitamente com arquivos definitivos sem registro no banco e registros pendentes sem arquivo válido.
 

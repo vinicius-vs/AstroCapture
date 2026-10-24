@@ -447,7 +447,9 @@ O processo de armazenamento deverá:
 6. Registrar os metadados em uma transação SQLite.
 7. Atualizar o estado da imagem para `Completed`.
 
-Sempre que possível, a promoção do arquivo temporário deverá utilizar uma operação atômica no mesmo sistema de arquivos.
+O armazenamento recebe um `QIODevice` legível em modo binário e copia até EOF em blocos, sem carregar o arquivo inteiro na memória. O tamanho esperado, se fornecido, deve coincidir com os bytes recebidos; arquivos vazios, erros de leitura/escrita e arquivos temporários ilegíveis ou com tamanho divergente devem falhar sem publicar um arquivo definitivo. O temporário é criado com permissões privadas no diretório final. A promoção usa criação atômica de hard link sem substituição; colisões concorrentes usam o próximo sufixo numérico.
+
+O componente de armazenamento só aceita quadros em `Validating` e retorna o caminho absoluto e o tamanho após a promoção. Ele não altera nem persiste o quadro: o chamador atualiza `Frame` e registra seus metadados somente após o sucesso do armazenamento.
 
 O sistema deverá tratar o caso em que o arquivo tenha sido gravado, mas a transação SQLite não tenha sido confirmada. A recuperação poderá reconciliar o arquivo com os registros pendentes, sem sobrescrever imagens existentes.
 

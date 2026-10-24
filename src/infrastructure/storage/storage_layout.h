@@ -24,7 +24,8 @@ public:
         const domain::Session& session,
         const domain::CaptureRun& captureRun,
         const domain::FrameId& frameId,
-        const QString& originalFileName) const;
+        const QString& originalFileName,
+        unsigned int firstSuffix = 0) const;
 
 private:
     QString imageRoot_;

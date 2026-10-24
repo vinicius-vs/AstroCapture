@@ -26,6 +26,8 @@ add_executable(astrocapture
     src/infrastructure/logging/json_lines_logging_service.h
     src/infrastructure/storage/storage_layout.cpp
     src/infrastructure/storage/storage_layout.h
+    src/infrastructure/storage/image_storage.cpp
+    src/infrastructure/storage/image_storage.h
     src/presentation/main_window.cpp
     src/presentation/main_window.h
 )
@@ -153,4 +155,23 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME astrocapture_storage_tests COMMAND astrocapture_storage_tests)
+
+    add_executable(astrocapture_image_storage_tests
+        src/domain/capture_entities.cpp
+        src/domain/capture_entities.h
+        src/infrastructure/storage/image_storage.cpp
+        src/infrastructure/storage/image_storage.h
+        src/infrastructure/storage/storage_layout.cpp
+        src/infrastructure/storage/storage_layout.h
+        tests/unit/test_image_storage.cpp
+    )
+
+    target_include_directories(astrocapture_image_storage_tests PRIVATE src)
+    target_link_libraries(astrocapture_image_storage_tests PRIVATE Qt6::Test)
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(astrocapture_image_storage_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME astrocapture_image_storage_tests COMMAND astrocapture_image_storage_tests)
 endif()

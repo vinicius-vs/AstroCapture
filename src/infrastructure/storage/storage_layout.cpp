@@ -161,13 +161,16 @@ QString StorageLayout::frameFilePath(
     const domain::Session& session,
     const domain::CaptureRun& captureRun,
     const domain::FrameId& frameId,
-    const QString& originalFileName) const
+    const QString& originalFileName,
+    unsigned int firstSuffix) const
 {
     const QString encodedFrameId = encodeIdentifier(frameId);
     const QString extension = QFileInfo(originalFileName).suffix();
     const QString directory = frameDirectory(target, session, captureRun);
 
-    for (unsigned int suffix = 0; suffix < std::numeric_limits<unsigned int>::max(); ++suffix) {
+    for (unsigned int suffix = firstSuffix;
+         suffix < std::numeric_limits<unsigned int>::max();
+         ++suffix) {
         const QString candidate = pathForCandidate(directory, encodedFrameId, extension, suffix);
         if (!QFileInfo::exists(candidate)) {
             return candidate;

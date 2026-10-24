@@ -23,6 +23,8 @@ O estado operacional aberto/fechado da sessão será armazenado em coluna própr
 
 As imagens serão armazenadas em `<AppDataLocation>/images/targets/<target-id>_<target-name-slug>/sessions/<session-id>/nights/<YYYY-MM-DD>/<FrameType>/`. IDs serão codificados em percent-encoding UTF-8 nos caminhos e nomes de arquivos utilizarão o ID do quadro com a extensão original. Se o nome existir, serão tentados sufixos `_001`, `_002` e seguintes antes da extensão. A geração de caminho não reserva o nome; a escrita deverá continuar protegida contra sobrescritas concorrentes.
 
+O armazenamento de imagens receberá um `QIODevice` em modo binário e copiará seus bytes em fluxo até EOF. Um tamanho esperado, quando informado, deverá coincidir com os bytes recebidos. A gravação será feita em um arquivo temporário privado no diretório final; o arquivo será verificado quanto à leitura e ao tamanho antes de ser publicado. A publicação utilizará criação atômica de hard link no mesmo diretório, sem substituir destinos existentes; colisões concorrentes avançarão para o próximo sufixo. O armazenamento aceitará apenas quadros em `Validating` e retornará caminho absoluto e tamanho sem alterar nem persistir o quadro.
+
 ## Justificativa
 
 - SQLite oferece transações e persistência local sem exigir um servidor de banco de dados.
