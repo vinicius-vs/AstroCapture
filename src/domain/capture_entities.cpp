@@ -271,8 +271,15 @@ void CaptureRun::resume()
 
 void CaptureRun::complete()
 {
-    requireRunState(state_, CaptureRunState::Running);
-    if (settings_.mode == CaptureMode::Continuous) {
+    const bool canComplete = state_ == CaptureRunState::Running
+        || state_ == CaptureRunState::StopRequested
+        || state_ == CaptureRunState::Paused;
+    if (!canComplete) {
+        throw std::logic_error("Invalid capture run state transition");
+    }
+    if (settings_.mode == CaptureMode::Continuous
+        && state_ != CaptureRunState::StopRequested
+        && state_ != CaptureRunState::Paused) {
         throw std::logic_error("Continuous capture runs cannot be completed without a completion condition");
     }
     state_ = CaptureRunState::Completed;
@@ -280,7 +287,9 @@ void CaptureRun::complete()
 
 void CaptureRun::fail()
 {
-    if (state_ != CaptureRunState::Running && state_ != CaptureRunState::Paused) {
+    if (state_ != CaptureRunState::Running
+        && state_ != CaptureRunState::StopRequested
+        && state_ != CaptureRunState::Paused) {
         throw std::logic_error("Invalid capture run state transition");
     }
     state_ = CaptureRunState::Failed;

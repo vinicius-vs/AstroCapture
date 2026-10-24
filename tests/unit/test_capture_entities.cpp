@@ -158,6 +158,42 @@ private slots:
         QCOMPARE(run.state(), CaptureRunState::Running);
     }
 
+    void captureRunMayFinishAfterSafeStopRequest()
+    {
+        CaptureRun run(
+            "run-2",
+            "session-1",
+            std::chrono::year{2026} / 10 / 18,
+            CaptureSettings{
+                FrameType::Light,
+                1s,
+                std::nullopt,
+                CaptureMode::Continuous,
+                std::nullopt
+            });
+        run.start();
+        run.requestStop();
+        run.complete();
+
+        QCOMPARE(run.state(), CaptureRunState::Completed);
+
+        CaptureRun finishedRun(
+            "run-3",
+            "session-1",
+            std::chrono::year{2026} / 10 / 18,
+            CaptureSettings{
+                FrameType::Light,
+                1s,
+                std::nullopt,
+                CaptureMode::Finite,
+                1
+            });
+        finishedRun.start();
+        finishedRun.pause();
+        finishedRun.complete();
+        QCOMPARE(finishedRun.state(), CaptureRunState::Completed);
+    }
+
     void frameMustFinishTransferAndValidationBeforeCompletion()
     {
         Frame frame(

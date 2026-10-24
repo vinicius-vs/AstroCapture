@@ -222,10 +222,15 @@ private slots:
 
             runs.updateState(run.id(), CaptureRunState::Running);
             runs.updateState(run.id(), CaptureRunState::StopRequested);
-            runs.updateState(run.id(), CaptureRunState::Paused);
-            runs.updateState(run.id(), CaptureRunState::Running);
             runs.updateState(run.id(), CaptureRunState::Completed);
             QCOMPARE(runs.findById(run.id())->state(), CaptureRunState::Completed);
+
+            runs.updateState(earlierRun.id(), CaptureRunState::Running);
+            runs.updateState(earlierRun.id(), CaptureRunState::StopRequested);
+            runs.updateState(earlierRun.id(), CaptureRunState::Paused);
+            runs.updateState(earlierRun.id(), CaptureRunState::Running);
+            runs.updateState(earlierRun.id(), CaptureRunState::Completed);
+            QCOMPARE(runs.findById(earlierRun.id())->state(), CaptureRunState::Completed);
         }
 
         SqliteDatabase reopenedDatabase(databasePath);
