@@ -393,6 +393,9 @@ A implementação deverá verificar as limitações específicas de cada câmera
 ### 9.1 SQLite
 
 O SQLite será utilizado para persistir os metadados e o histórico da aplicação.
+O acesso será feito pelo módulo Qt SQL com o driver `QSQLITE`. A aplicação utilizará um banco único chamado `astrocapture.sqlite3` na pasta de dados do usuário indicada por `QStandardPaths::AppDataLocation`.
+
+As migrações serão versionadas por `PRAGMA user_version` e executadas em transações. Os enums serão armazenados como texto, com restrições `CHECK` para os valores válidos. Timestamps serão serializados em ISO 8601 UTC. Chaves estrangeiras impedirão exclusões que deixem registros dependentes sem referência.
 
 Tabelas previstas:
 

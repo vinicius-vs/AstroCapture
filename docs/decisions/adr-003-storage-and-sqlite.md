@@ -15,6 +15,10 @@ Utilizar SQLite para persistir os metadados e o sistema de arquivos para armazen
 
 O banco será a fonte principal de verdade para sessões, sequências e quadros. Um arquivo `session.json` poderá ser utilizado como manifesto complementar, sem substituir o banco.
 
+O acesso ao SQLite será realizado pelo módulo Qt SQL com o driver `QSQLITE`. Será utilizado um banco único, chamado `astrocapture.sqlite3`, na pasta de dados do usuário indicada por `QStandardPaths::AppDataLocation`. A versão do esquema será registrada em `PRAGMA user_version`; cada migração será executada em uma transação.
+
+Enums serão persistidos como texto e validados por restrições `CHECK`. Timestamps serão armazenados em ISO 8601 UTC. Chaves estrangeiras restringirão exclusões de registros ainda referenciados.
+
 ## Justificativa
 
 - SQLite oferece transações e persistência local sem exigir um servidor de banco de dados.

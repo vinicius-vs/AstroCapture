@@ -7,18 +7,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 6.2 REQUIRED COMPONENTS Sql Widgets)
 
 add_executable(astrocapture
     src/app/main.cpp
     src/domain/capture_entities.cpp
     src/domain/capture_entities.h
+    src/infrastructure/persistence/sqlite_database.cpp
+    src/infrastructure/persistence/sqlite_database.h
     src/presentation/main_window.cpp
     src/presentation/main_window.h
 )
 
 target_include_directories(astrocapture PRIVATE src)
-target_link_libraries(astrocapture PRIVATE Qt6::Widgets)
+target_link_libraries(astrocapture PRIVATE Qt6::Sql Qt6::Widgets)
 target_compile_definitions(astrocapture PRIVATE
     ASTROCAPTURE_VERSION="${PROJECT_VERSION}"
 )
@@ -67,4 +69,19 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME astrocapture_domain_tests COMMAND astrocapture_domain_tests)
+
+    add_executable(astrocapture_persistence_tests
+        src/infrastructure/persistence/sqlite_database.cpp
+        src/infrastructure/persistence/sqlite_database.h
+        tests/unit/test_sqlite_database.cpp
+    )
+
+    target_include_directories(astrocapture_persistence_tests PRIVATE src)
+    target_link_libraries(astrocapture_persistence_tests PRIVATE Qt6::Sql Qt6::Test)
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(astrocapture_persistence_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME astrocapture_persistence_tests COMMAND astrocapture_persistence_tests)
 endif()

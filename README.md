@@ -280,7 +280,7 @@ A pré-visualização deverá utilizar uma representação apropriada da imagem,
 - Sistema Linux para o ambiente inicial de desenvolvimento.
 - Compilador C++20, como GCC ou Clang.
 - CMake 3.21 ou mais recente.
-- Pacote de desenvolvimento do Qt 6, incluindo Qt Widgets e Qt Test.  instale `qt6-qtbase-devel` (o pacote runtime do Qt sozinho não inclui os arquivos CMake necessários para compilar).
+- Pacote de desenvolvimento do Qt 6, incluindo Qt Widgets, Qt SQL e Qt Test, com o driver SQLite do Qt disponível. Instale `qt6-qtbase-devel` (o pacote runtime do Qt sozinho não inclui os arquivos CMake necessários para compilar).
 - Bibliotecas de desenvolvimento da libgphoto2.
 - SQLite.
 - Git.
