@@ -140,6 +140,8 @@ Ao abrir uma sessão, o sistema carrega:
 
 O sistema deve reconciliar o estado persistido com os arquivos existentes, identificando possíveis inconsistências sem sobrescrever ou excluir dados silenciosamente.
 
+A inspeção compara quadros concluídos com os arquivos no diretório da sessão: arquivo ausente, ilegível ou com tamanho divergente é apontado. Arquivos sem registro e temporários abandonados sob `nights/` também são listados, sem associação ou exclusão automática. A inspeção não modifica estados persistidos. Quadros `Exposing`, `Transferring` e `Validating` permanecem como estão e são sinalizados como inconclusivos; continuar uma sequência só disponibiliza os IDs de quadros `Pending`, sem repetir os inconclusivos. A escolha entre continuar, criar nova sequência ou cancelar deve ser registrada no JSONL existente.
+
 ### 5.3 Retomar uma sessão interrompida
 
 Se houver uma sequência incompleta, o sistema deve oferecer três opções:
@@ -149,6 +151,8 @@ Se houver uma sequência incompleta, o sistema deve oferecer três opções:
 - **Cancelar:** não iniciar nenhuma captura.
 
 Quadros já concluídos não devem ser capturados novamente automaticamente.
+
+O serviço de recuperação fornece o relatório e registra a decisão selecionada; a integração desse serviço com a tela de abertura de sessões será feita junto com a implementação desse fluxo de interface.
 
 ## 6. Conexão e preparação da câmera
 

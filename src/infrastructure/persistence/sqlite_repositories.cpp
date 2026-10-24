@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -150,6 +151,29 @@ FrameType frameTypeFromName(const QString& value)
         return FrameType::DarkFlat;
     }
     throw RepositoryError("Database contains an unknown frame type");
+}
+
+FrameState frameStateFromName(const QString& value)
+{
+    if (value == QStringLiteral("Pending")) {
+        return FrameState::Pending;
+    }
+    if (value == QStringLiteral("Exposing")) {
+        return FrameState::Exposing;
+    }
+    if (value == QStringLiteral("Transferring")) {
+        return FrameState::Transferring;
+    }
+    if (value == QStringLiteral("Validating")) {
+        return FrameState::Validating;
+    }
+    if (value == QStringLiteral("Completed")) {
+        return FrameState::Completed;
+    }
+    if (value == QStringLiteral("Failed")) {
+        return FrameState::Failed;
+    }
+    throw RepositoryError("Database contains an unknown frame state");
 }
 
 QString captureModeName(CaptureMode mode)
@@ -319,6 +343,42 @@ CaptureRun captureRunFromQuery(const QSqlQuery& query)
             mode,
             plannedFrameCount},
         captureRunStateFromName(query.value(8).toString()));
+}
+
+Frame frameFromQuery(const QSqlQuery& query)
+{
+    const auto exposure = query.value(4).isNull()
+        ? std::optional<std::chrono::microseconds>{}
+        : std::optional<std::chrono::microseconds>{
+              std::chrono::microseconds{query.value(4).toLongLong()}};
+    const auto iso = query.value(5).isNull()
+        ? std::optional<unsigned int>{}
+        : std::optional<unsigned int>{query.value(5).toUInt()};
+    const auto capturedAt = query.value(6).isNull()
+        ? std::optional<Timestamp>{}
+        : std::optional<Timestamp>{timestampFromString(query.value(6).toString())};
+    const auto filePath = query.value(7).isNull()
+        ? std::optional<std::filesystem::path>{}
+        : std::optional<std::filesystem::path>{
+              std::filesystem::path{query.value(7).toString().toStdString()}};
+    const auto fileSize = query.value(8).isNull()
+        ? std::optional<std::uint64_t>{}
+        : std::optional<std::uint64_t>{static_cast<std::uint64_t>(query.value(8).toLongLong())};
+    const auto errorMessage = query.value(9).isNull()
+        ? std::optional<std::string>{}
+        : std::optional<std::string>{query.value(9).toString().toStdString()};
+
+    return Frame::restore(
+        query.value(0).toString().toStdString(),
+        query.value(1).toString().toStdString(),
+        frameTypeFromName(query.value(2).toString()),
+        frameStateFromName(query.value(3).toString()),
+        exposure,
+        iso,
+        capturedAt,
+        filePath,
+        fileSize,
+        errorMessage);
 }
 
 std::optional<SessionRecord> findSessionById(SqliteDatabase& database, const SessionId& id)
@@ -651,6 +711,31 @@ void SqliteCaptureRunRepository::updateState(
         }
         throw;
     }
+}
+
+SqliteFrameRepository::SqliteFrameRepository(SqliteDatabase& database)
+    : database_(database)
+{
+}
+
+std::vector<Frame> SqliteFrameRepository::findByCaptureRunId(
+    const CaptureRunId& captureRunId) const
+{
+    QSqlQuery query(database_.connection());
+    if (!query.prepare(QStringLiteral(
+            "SELECT id, capture_run_id, type, state, exposure_microseconds, iso, captured_at, "
+            "file_path, file_size, error_message "
+            "FROM frames WHERE capture_run_id = :capture_run_id ORDER BY id"))) {
+        throwQueryError(query, QStringLiteral("Preparing frames-by-capture-run query failed"));
+    }
+    query.bindValue(QStringLiteral(":capture_run_id"), text(captureRunId));
+    execute(database_, query, QStringLiteral("Querying frames by capture run failed"));
+
+    std::vector<Frame> frames;
+    while (next(query, QStringLiteral("Reading frames-by-capture-run result failed"))) {
+        frames.push_back(frameFromQuery(query));
+    }
+    return frames;
 }
 
 } // namespace infrastructure

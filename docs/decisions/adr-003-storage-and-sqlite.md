@@ -41,3 +41,5 @@ O armazenamento de imagens receberá um `QIODevice` em modo binário e copiará 
 - O backup manual da pasta de dados deverá ser documentado.
 
 O SQLite e o sistema de arquivos não compartilham uma transação atômica. A implementação deverá tratar explicitamente falhas ocorridas entre a gravação do arquivo e a confirmação dos metadados.
+
+Na recuperação de uma sessão, arquivos ausentes, ilegíveis, com tamanho divergente, órfãos ou temporários abandonados serão reportados sem alteração ou exclusão automática. Quadros que permaneceram em estados intermediários serão preservados como inconclusivos e não serão repetidos automaticamente. A escolha do usuário entre continuar quadros pendentes, iniciar uma nova sequência ou cancelar será auditada no log JSON Lines.

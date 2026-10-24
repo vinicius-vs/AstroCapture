@@ -10,12 +10,15 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.2 REQUIRED COMPONENTS Sql Widgets)
 
 add_executable(astrocapture
+    src/application/session_recovery_service.cpp
+    src/application/session_recovery_service.h
     src/app/main.cpp
     src/domain/capture_entities.cpp
     src/domain/capture_entities.h
     src/domain/logging/log_event.h
     src/domain/logging/logging_service.h
     src/domain/repositories/capture_run_repository.h
+    src/domain/repositories/frame_repository.h
     src/domain/repositories/repository_errors.h
     src/domain/repositories/session_repository.h
     src/infrastructure/persistence/sqlite_database.cpp
@@ -24,6 +27,8 @@ add_executable(astrocapture
     src/infrastructure/persistence/sqlite_repositories.h
     src/infrastructure/logging/json_lines_logging_service.cpp
     src/infrastructure/logging/json_lines_logging_service.h
+    src/infrastructure/recovery/session_file_inspector.cpp
+    src/infrastructure/recovery/session_file_inspector.h
     src/infrastructure/storage/storage_layout.cpp
     src/infrastructure/storage/storage_layout.h
     src/infrastructure/storage/image_storage.cpp
@@ -102,6 +107,7 @@ if(BUILD_TESTING)
         src/domain/capture_entities.cpp
         src/domain/capture_entities.h
         src/domain/repositories/capture_run_repository.h
+        src/domain/repositories/frame_repository.h
         src/domain/repositories/repository_errors.h
         src/domain/repositories/session_repository.h
         src/infrastructure/persistence/sqlite_database.cpp
@@ -174,4 +180,33 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME astrocapture_image_storage_tests COMMAND astrocapture_image_storage_tests)
+
+    add_executable(astrocapture_recovery_tests
+        src/application/session_recovery_service.cpp
+        src/application/session_recovery_service.h
+        src/domain/capture_entities.cpp
+        src/domain/capture_entities.h
+        src/domain/logging/log_event.h
+        src/domain/logging/logging_service.h
+        src/domain/repositories/capture_run_repository.h
+        src/domain/repositories/frame_repository.h
+        src/domain/repositories/repository_errors.h
+        src/domain/repositories/session_repository.h
+        src/infrastructure/persistence/sqlite_database.cpp
+        src/infrastructure/persistence/sqlite_database.h
+        src/infrastructure/persistence/sqlite_repositories.cpp
+        src/infrastructure/persistence/sqlite_repositories.h
+        src/infrastructure/recovery/session_file_inspector.cpp
+        src/infrastructure/recovery/session_file_inspector.h
+        tests/unit/test_session_recovery.cpp
+    )
+
+    target_include_directories(astrocapture_recovery_tests PRIVATE src)
+    target_link_libraries(astrocapture_recovery_tests PRIVATE Qt6::Sql Qt6::Test)
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(astrocapture_recovery_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME astrocapture_recovery_tests COMMAND astrocapture_recovery_tests)
 endif()

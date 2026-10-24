@@ -1,6 +1,7 @@
 #pragma once
 
 #include "domain/repositories/capture_run_repository.h"
+#include "domain/repositories/frame_repository.h"
 #include "domain/repositories/session_repository.h"
 #include "infrastructure/persistence/sqlite_database.h"
 
@@ -34,6 +35,18 @@ public:
     std::optional<domain::CaptureRun> findById(const domain::CaptureRunId& id) const override;
     std::vector<domain::CaptureRun> findBySessionId(const domain::SessionId& sessionId) const override;
     void updateState(const domain::CaptureRunId& id, domain::CaptureRunState desiredState) override;
+
+private:
+    SqliteDatabase& database_;
+};
+
+class SqliteFrameRepository final : public domain::FrameRepository
+{
+public:
+    explicit SqliteFrameRepository(SqliteDatabase& database);
+
+    std::vector<domain::Frame> findByCaptureRunId(
+        const domain::CaptureRunId& captureRunId) const override;
 
 private:
     SqliteDatabase& database_;

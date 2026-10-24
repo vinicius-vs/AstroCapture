@@ -488,6 +488,8 @@ Se uma sequência tiver sido interrompida, o usuário deverá poder escolher ent
 
 A aplicação não deverá presumir que uma exposição interrompida produziu uma imagem válida, nem repetir automaticamente uma captura cuja conclusão seja desconhecida.
 
+O serviço de recuperação consulta sequências e quadros persistidos, verifica arquivos concluídos quanto à existência, legibilidade e tamanho, e percorre os arquivos sob `nights/` para apontar arquivos órfãos e temporários abandonados. A inspeção é somente leitura: não altera estados, não associa arquivos automaticamente e não apaga dados. Quadros em `Exposing`, `Transferring` ou `Validating` são reportados como inconclusivos; a opção de continuar fica disponível para uma sequência não terminal que tenha quadros `Pending`, e não repete os inconclusivos. Quando uma decisão for escolhida, ela é registrada no JSONL com os IDs da sessão/sequência e a opção. A interface de recuperação será conectada ao fluxo de abertura de sessão quando esse fluxo for implementado.
+
 ## 11. Logs e diagnóstico
 
 O sistema deverá registrar eventos importantes para diagnóstico e recuperação.
