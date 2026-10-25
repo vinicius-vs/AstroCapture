@@ -10,7 +10,9 @@
 #include <QtTest>
 
 #include <chrono>
+#include <algorithm>
 #include <optional>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -92,6 +94,100 @@ private:
     SimulatedCamera camera_;
 };
 
+class ApplyFailOnceCamera final : public ICamera
+{
+public:
+    CameraOperationResult connect() override
+    {
+        return camera_.connect();
+    }
+
+    CameraOperationResult disconnect() override
+    {
+        return camera_.disconnect();
+    }
+
+    CameraResult<CameraCapabilities> capabilities() const override
+    {
+        return camera_.capabilities();
+    }
+
+    CameraResult<CameraSettings> settings() const override
+    {
+        return camera_.settings();
+    }
+
+    CameraOperationResult applySettings(const CameraSettings& settings) override
+    {
+        if (failNextApply_) {
+            failNextApply_ = false;
+            return CameraError{
+                CameraErrorCode::InvalidSettings,
+                "Injected settings failure",
+                "applySettings",
+                "ApplyFailOnceCamera"
+            };
+        }
+        return camera_.applySettings(settings);
+    }
+
+    CameraResult<CameraCapture> capture(const CaptureRequest& request) override
+    {
+        return camera_.capture(request);
+    }
+
+    CameraOperationResult transfer(
+        const CameraCapture& capture,
+        std::ostream& destination,
+        TransferProgressCallback progress) override
+    {
+        return camera_.transfer(capture, destination, std::move(progress));
+    }
+
+    CameraOperationResult startLiveView() override
+    {
+        return camera_.startLiveView();
+    }
+
+    CameraOperationResult stopLiveView() override
+    {
+        return camera_.stopLiveView();
+    }
+
+private:
+    SimulatedCamera camera_;
+    bool failNextApply_{true};
+};
+
+class ThrowingCaptureCamera final : public ICamera
+{
+public:
+    CameraOperationResult connect() override { return camera_.connect(); }
+    CameraOperationResult disconnect() override { return camera_.disconnect(); }
+    CameraResult<CameraCapabilities> capabilities() const override { return camera_.capabilities(); }
+    CameraResult<CameraSettings> settings() const override { return camera_.settings(); }
+    CameraOperationResult applySettings(const CameraSettings& settings) override
+    {
+        return camera_.applySettings(settings);
+    }
+    CameraResult<CameraCapture> capture(const CaptureRequest&) override
+    {
+        throw std::runtime_error("Exposure outcome is unknown");
+    }
+    CameraOperationResult transfer(
+        const CameraCapture& capture,
+        std::ostream& destination,
+        TransferProgressCallback progress) override
+    {
+        return camera_.transfer(capture, destination, std::move(progress));
+    }
+    CameraOperationResult startLiveView() override { return camera_.startLiveView(); }
+    CameraOperationResult stopLiveView() override { return camera_.stopLiveView(); }
+
+private:
+    SimulatedCamera camera_;
+};
+
 struct CaptureFixture
 {
     explicit CaptureFixture(const QString& rootPath, CaptureSettings settings = {
@@ -142,6 +238,7 @@ private slots:
         RecordingLoggingService logging;
         CaptureFrameService service(
             camera,
+            fixture.runs,
             fixture.frames,
             fixture.imageStorage,
             logging,
@@ -186,7 +283,7 @@ private slots:
             }
         }
         QVERIFY(reportedTransferProgress);
-        QCOMPARE(logging.events.size(), std::size_t{5});
+        QCOMPARE(logging.events.size(), std::size_t{6});
         QCOMPARE(logging.events.back().state, std::optional<QString>{QStringLiteral("Completed")});
     }
 
@@ -200,6 +297,7 @@ private slots:
         RecordingLoggingService logging;
         CaptureFrameService service(
             camera,
+            fixture.runs,
             fixture.frames,
             fixture.imageStorage,
             logging,
@@ -216,12 +314,22 @@ private slots:
             QCOMPARE(error.frameId(), FrameId("frame-failed"));
             QVERIFY(error.cameraError().has_value());
             QCOMPARE(error.cameraError()->code, CameraErrorCode::TransferFailed);
+            QVERIFY(!error.recoveryOptions().empty());
+            QVERIFY(std::find(
+                        error.recoveryOptions().begin(),
+                        error.recoveryOptions().end(),
+                        CaptureRecoveryDecision::Retry)
+                    == error.recoveryOptions().end());
         }
         QVERIFY(caughtFailure);
 
         const auto failedFrame = fixture.frames.findById("frame-failed");
         QVERIFY(failedFrame.has_value());
         QCOMPARE(failedFrame->state(), FrameState::Failed);
+        QCOMPARE(fixture.runs.findById("run-1")->state(), CaptureRunState::Paused);
+        QVERIFY_EXCEPTION_THROWN(
+            service.applyRecoveryDecision("frame-failed", CaptureRecoveryDecision::Retry),
+            std::logic_error);
         QVERIFY(failedFrame->errorMessage().has_value());
         QVERIFY(!failedFrame->filePath().has_value());
         QCOMPARE(logging.events.back().severity, LogSeverity::Error);
@@ -240,6 +348,7 @@ private slots:
         RecordingLoggingService logging;
         CaptureFrameService service(
             camera,
+            fixture.runs,
             fixture.frames,
             fixture.imageStorage,
             logging,
@@ -251,6 +360,129 @@ private slots:
             service.execute("invalid-frame"),
             CaptureFrameError);
         QVERIFY(!fixture.frames.findById("invalid-frame").has_value());
+        QCOMPARE(fixture.runs.findById("run-1")->state(), CaptureRunState::Paused);
+    }
+
+    void safePreExposureFailureRequiresExplicitRetryAndRecordsAttempts()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(directory.path());
+        ApplyFailOnceCamera camera;
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
+        RecordingLoggingService logging;
+        CaptureFrameService service(
+            camera,
+            fixture.runs,
+            fixture.frames,
+            fixture.imageStorage,
+            logging,
+            fixture.target,
+            fixture.session,
+            fixture.captureRun);
+
+        bool caughtFailure = false;
+        try {
+            service.execute("frame-retry");
+        } catch (const CaptureFrameError& error) {
+            caughtFailure = true;
+            QCOMPARE(error.stage(), CaptureFrameStage::ApplySettings);
+            QVERIFY(std::find(
+                        error.recoveryOptions().begin(),
+                        error.recoveryOptions().end(),
+                        CaptureRecoveryDecision::Retry)
+                    != error.recoveryOptions().end());
+        }
+        QVERIFY(caughtFailure);
+        QCOMPARE(fixture.frames.findById("frame-retry")->state(), FrameState::Pending);
+        QCOMPARE(fixture.runs.findById("run-1")->state(), CaptureRunState::Paused);
+
+        service.applyRecoveryDecision("frame-retry", CaptureRecoveryDecision::Retry);
+        QCOMPARE(fixture.runs.findById("run-1")->state(), CaptureRunState::Running);
+        const Frame completedFrame = service.execute("frame-retry");
+        QCOMPARE(completedFrame.state(), FrameState::Completed);
+        QCOMPARE(
+            std::count_if(
+                logging.events.begin(),
+                logging.events.end(),
+                [](const LogEvent& event) {
+                    return event.event == QStringLiteral("capture.frame.attempt_started");
+                }),
+            2);
+        QCOMPARE(
+            std::count_if(
+                logging.events.begin(),
+                logging.events.end(),
+                [](const LogEvent& event) {
+                    return event.event == QStringLiteral("capture.recovery.decision");
+                }),
+            1);
+    }
+
+    void recoveryCanPauseOrAbortWithoutRetryingUncertainFrame()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(directory.path());
+        TransferFailingCamera camera;
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
+        RecordingLoggingService logging;
+        CaptureFrameService service(
+            camera,
+            fixture.runs,
+            fixture.frames,
+            fixture.imageStorage,
+            logging,
+            fixture.target,
+            fixture.session,
+            fixture.captureRun);
+
+        QVERIFY_EXCEPTION_THROWN(service.execute("frame-abort"), CaptureFrameError);
+        service.applyRecoveryDecision("frame-abort", CaptureRecoveryDecision::Pause);
+        QCOMPARE(fixture.runs.findById("run-1")->state(), CaptureRunState::Paused);
+        service.applyRecoveryDecision("frame-abort", CaptureRecoveryDecision::Abort);
+        QCOMPARE(fixture.runs.findById("run-1")->state(), CaptureRunState::Failed);
+        QCOMPARE(fixture.captureRun.state(), CaptureRunState::Failed);
+    }
+
+    void thrownExposureFailureIsRecordedAsInconclusiveAndCannotBeRetried()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(directory.path());
+        ThrowingCaptureCamera camera;
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
+        RecordingLoggingService logging;
+        CaptureFrameService service(
+            camera,
+            fixture.runs,
+            fixture.frames,
+            fixture.imageStorage,
+            logging,
+            fixture.target,
+            fixture.session,
+            fixture.captureRun);
+
+        bool caughtFailure = false;
+        try {
+            service.execute("frame-unknown");
+        } catch (const CaptureFrameError& error) {
+            caughtFailure = true;
+            QCOMPARE(error.stage(), CaptureFrameStage::Exposure);
+            QVERIFY(error.cameraError().has_value());
+            QCOMPARE(error.cameraError()->code, CameraErrorCode::Unknown);
+            QVERIFY(std::find(
+                        error.recoveryOptions().begin(),
+                        error.recoveryOptions().end(),
+                        CaptureRecoveryDecision::Retry)
+                    == error.recoveryOptions().end());
+        }
+        QVERIFY(caughtFailure);
+        QCOMPARE(fixture.frames.findById("frame-unknown")->state(), FrameState::Failed);
+        QCOMPARE(fixture.runs.findById("run-1")->state(), CaptureRunState::Paused);
+        QVERIFY_EXCEPTION_THROWN(
+            service.applyRecoveryDecision("frame-unknown", CaptureRecoveryDecision::Retry),
+            std::logic_error);
     }
 };
 

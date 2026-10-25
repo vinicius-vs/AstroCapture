@@ -431,6 +431,8 @@ As opções de recuperação podem incluir tentar novamente, pausar, encerrar a 
 
 O sistema não deve repetir uma exposição automaticamente quando não for possível determinar se a câmera já a executou. Essa decisão deve considerar o estado da operação e a possibilidade de duplicar uma imagem.
 
+Falhas durante uma sequência ativa pausam a sequência e retornam a etapa, a mensagem, o quadro e o erro da câmera quando disponível. O chamador apresenta as opções de recuperação ao usuário. Nova tentativa só é oferecida quando a falha ocorreu antes de iniciar a exposição, como ao aplicar configurações; quadros em `Exposing`, `Transferring` ou `Validating` não podem ser repetidos pelo mesmo fluxo. Cada início de tentativa e decisão (`Retry`, `Pause` ou `Abort`) é registrado no JSON Lines. Uma repetição segura reutiliza somente um quadro ainda `Pending`; o armazenamento publica imagens sem substituir destinos existentes.
+
 ## 14. Persistência no SQLite
 
 O SQLite será a fonte principal dos metadados da captura.

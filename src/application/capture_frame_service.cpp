@@ -60,6 +60,38 @@ QString cameraErrorCodeName(CameraErrorCode code)
     throw std::invalid_argument("Invalid camera error code");
 }
 
+QString recoveryDecisionName(CaptureRecoveryDecision decision)
+{
+    switch (decision) {
+    case CaptureRecoveryDecision::Retry:
+        return QStringLiteral("Retry");
+    case CaptureRecoveryDecision::Pause:
+        return QStringLiteral("Pause");
+    case CaptureRecoveryDecision::Abort:
+        return QStringLiteral("Abort");
+    }
+    throw std::invalid_argument("Invalid capture recovery decision");
+}
+
+QString captureFrameStageName(CaptureFrameStage stage)
+{
+    switch (stage) {
+    case CaptureFrameStage::Validate:
+        return QStringLiteral("validate");
+    case CaptureFrameStage::ApplySettings:
+        return QStringLiteral("applySettings");
+    case CaptureFrameStage::Exposure:
+        return QStringLiteral("exposure");
+    case CaptureFrameStage::Transfer:
+        return QStringLiteral("transfer");
+    case CaptureFrameStage::StoreImage:
+        return QStringLiteral("storeImage");
+    case CaptureFrameStage::PersistMetadata:
+        return QStringLiteral("persistMetadata");
+    }
+    throw std::invalid_argument("Invalid capture frame failure stage");
+}
+
 std::string cameraErrorMessage(const CameraError& cameraError)
 {
     if (!cameraError.message.empty()) {
@@ -143,11 +175,13 @@ CaptureFrameError::CaptureFrameError(
     CaptureFrameStage stage,
     domain::FrameId frameId,
     std::string message,
-    std::optional<domain::CameraError> cameraError)
+    std::optional<domain::CameraError> cameraError,
+    std::vector<CaptureRecoveryDecision> recoveryOptions)
     : std::runtime_error(std::move(message))
     , stage_(stage)
     , frameId_(std::move(frameId))
     , cameraError_(std::move(cameraError))
+    , recoveryOptions_(std::move(recoveryOptions))
 {
 }
 
@@ -166,15 +200,22 @@ const std::optional<domain::CameraError>& CaptureFrameError::cameraError() const
     return cameraError_;
 }
 
+const std::vector<CaptureRecoveryDecision>& CaptureFrameError::recoveryOptions() const noexcept
+{
+    return recoveryOptions_;
+}
+
 CaptureFrameService::CaptureFrameService(
     domain::ICamera& camera,
+    domain::CaptureRunRepository& captureRunRepository,
     domain::FrameRepository& frameRepository,
     infrastructure::ImageStorage& imageStorage,
     domain::LoggingService& loggingService,
     const domain::Target& target,
     const domain::Session& session,
-    const domain::CaptureRun& captureRun)
+    domain::CaptureRun& captureRun)
     : camera_(camera)
+    , captureRunRepository_(captureRunRepository)
     , frameRepository_(frameRepository)
     , imageStorage_(imageStorage)
     , loggingService_(loggingService)
@@ -202,53 +243,125 @@ domain::Frame CaptureFrameService::execute(
             "Capture run, session, and target do not belong together");
     }
 
-    const CameraResult<CameraCapabilities> capabilitiesResult = camera_.capabilities();
-    if (const auto* cameraError = std::get_if<CameraError>(&capabilitiesResult)) {
-        throw CaptureFrameError(
-            CaptureFrameStage::Validate,
+    CameraResult<CameraCapabilities> capabilitiesResult = CameraError{};
+    try {
+        capabilitiesResult = camera_.capabilities();
+    } catch (const std::exception& error) {
+        failBeforeFrame(
             frameId,
-            cameraErrorMessage(*cameraError),
-            *cameraError);
+            CaptureFrameStage::Validate,
+            error.what(),
+            CameraError{CameraErrorCode::Unknown, error.what(), "capabilities", std::nullopt},
+            true);
     }
-    const CameraResult<CameraSettings> currentSettingsResult = camera_.settings();
-    if (const auto* cameraError = std::get_if<CameraError>(&currentSettingsResult)) {
-        throw CaptureFrameError(
-            CaptureFrameStage::Validate,
+    if (const auto* cameraError = std::get_if<CameraError>(&capabilitiesResult)) {
+        failBeforeFrame(
             frameId,
+            CaptureFrameStage::Validate,
             cameraErrorMessage(*cameraError),
-            *cameraError);
+            *cameraError,
+            true);
+    }
+    CameraResult<CameraSettings> currentSettingsResult = CameraError{};
+    try {
+        currentSettingsResult = camera_.settings();
+    } catch (const std::exception& error) {
+        failBeforeFrame(
+            frameId,
+            CaptureFrameStage::Validate,
+            error.what(),
+            CameraError{CameraErrorCode::Unknown, error.what(), "settings", std::nullopt},
+            true);
+    }
+    if (const auto* cameraError = std::get_if<CameraError>(&currentSettingsResult)) {
+        failBeforeFrame(
+            frameId,
+            CaptureFrameStage::Validate,
+            cameraErrorMessage(*cameraError),
+            *cameraError,
+            true);
     }
     try {
         captureRun_.settings().validate(
             std::get<CameraCapabilities>(capabilitiesResult),
             std::get<CameraSettings>(currentSettingsResult));
     } catch (const std::invalid_argument& error) {
-        throw CaptureFrameError(
-            CaptureFrameStage::Validate,
+        failBeforeFrame(
             frameId,
+            CaptureFrameStage::Validate,
             error.what());
     }
 
-    Frame frame(
-        std::move(frameId),
-        captureRun_.id(),
-        captureRun_.settings().frameType,
-        captureRun_.settings().exposure,
-        captureRun_.settings().iso);
-    frameRepository_.create(frame);
-    reportState(frame, std::nullopt, progress);
+    std::optional<Frame> existingFrame = frameRepository_.findById(frameId);
+    Frame frame = [&]() {
+        if (existingFrame) {
+            if (existingFrame->state() != FrameState::Pending
+                || existingFrame->captureRunId() != captureRun_.id()
+                || existingFrame->type() != captureRun_.settings().frameType
+                || existingFrame->exposure() != captureRun_.settings().exposure
+                || existingFrame->iso() != captureRun_.settings().iso) {
+                throw CaptureFrameError(
+                    CaptureFrameStage::Validate,
+                    frameId,
+                    "Only the unchanged Pending frame can be captured or retried");
+            }
+            return *existingFrame;
+        }
+        Frame newFrame(
+            std::move(frameId),
+            captureRun_.id(),
+            captureRun_.settings().frameType,
+            captureRun_.settings().exposure,
+            captureRun_.settings().iso);
+        try {
+            frameRepository_.create(newFrame);
+        } catch (...) {
+            pauseCaptureRun();
+            throw;
+        }
+        return newFrame;
+    }();
+    if (!existingFrame) {
+        recoverableUnstartedFrames_.erase(frame.id());
+        retryableUnstartedFrames_.erase(frame.id());
+        reportState(frame, std::nullopt, progress);
+    } else {
+        recoverableUnstartedFrames_.erase(frame.id());
+        retryableUnstartedFrames_.erase(frame.id());
+    }
 
-    frame.startExposure(
-        std::chrono::time_point_cast<std::chrono::microseconds>(
-            std::chrono::system_clock::now()));
-    frameRepository_.update(frame);
-    reportState(frame, FrameState::Pending, progress);
+    LogEvent attemptEvent;
+    attemptEvent.severity = LogSeverity::Info;
+    attemptEvent.event = QStringLiteral("capture.frame.attempt_started");
+    attemptEvent.message = QStringLiteral("Capture attempt started");
+    attemptEvent.sessionId = session_.id();
+    attemptEvent.captureRunId = captureRun_.id();
+    attemptEvent.frameId = frame.id();
+    attemptEvent.operation = QStringLiteral("captureFrame");
+    attemptEvent.state = frameStateName(frame.state());
+    attemptEvent.captureSettings = captureRun_.settings();
+    try {
+        loggingService_.log(attemptEvent);
+    } catch (...) {
+        pauseCaptureRun();
+        throw;
+    }
 
     const CameraSettings requestedSettings{
         captureRun_.settings().exposure,
         captureRun_.settings().iso
     };
-    const CameraOperationResult applyResult = camera_.applySettings(requestedSettings);
+    CameraOperationResult applyResult{std::monostate{}};
+    try {
+        applyResult = camera_.applySettings(requestedSettings);
+    } catch (const std::exception& error) {
+        fail(
+            frame,
+            CaptureFrameStage::ApplySettings,
+            error.what(),
+            progress,
+            CameraError{CameraErrorCode::Unknown, error.what(), "applySettings", std::nullopt});
+    }
     if (const auto* cameraError = std::get_if<CameraError>(&applyResult)) {
         fail(
             frame,
@@ -258,8 +371,28 @@ domain::Frame CaptureFrameService::execute(
             *cameraError);
     }
 
-    const CameraResult<CameraCapture> captureResult = camera_.capture(
-        CaptureRequest{requestedSettings});
+    frame.startExposure(
+        std::chrono::time_point_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now()));
+    try {
+        frameRepository_.update(frame);
+    } catch (...) {
+        pauseCaptureRun();
+        throw;
+    }
+    reportState(frame, FrameState::Pending, progress);
+
+    CameraResult<CameraCapture> captureResult = CameraError{};
+    try {
+        captureResult = camera_.capture(CaptureRequest{requestedSettings});
+    } catch (const std::exception& error) {
+        fail(
+            frame,
+            CaptureFrameStage::Exposure,
+            error.what(),
+            progress,
+            CameraError{CameraErrorCode::Unknown, error.what(), "capture", std::nullopt});
+    }
     if (const auto* cameraError = std::get_if<CameraError>(&captureResult)) {
         fail(
             frame,
@@ -289,7 +422,12 @@ domain::Frame CaptureFrameService::execute(
     }
 
     frame.startTransfer();
-    frameRepository_.update(frame);
+    try {
+        frameRepository_.update(frame);
+    } catch (...) {
+        pauseCaptureRun();
+        throw;
+    }
     reportState(frame, FrameState::Exposing, progress);
 
     DeviceStreamBuffer streamBuffer(temporaryImage);
@@ -332,7 +470,12 @@ domain::Frame CaptureFrameService::execute(
     }
 
     frame.startValidation();
-    frameRepository_.update(frame);
+    try {
+        frameRepository_.update(frame);
+    } catch (...) {
+        pauseCaptureRun();
+        throw;
+    }
     reportState(frame, FrameState::Transferring, progress);
 
     if (!temporaryImage.seek(0)) {
@@ -354,7 +497,7 @@ domain::Frame CaptureFrameService::execute(
             QString::fromStdString("frame" + cameraCapture.fileExtension),
             temporaryImage,
             cameraCapture.expectedSize);
-    } catch (const infrastructure::ImageStorageError& error) {
+    } catch (const std::exception& error) {
         fail(
             frame,
             CaptureFrameStage::StoreImage,
@@ -368,6 +511,7 @@ domain::Frame CaptureFrameService::execute(
     try {
         frameRepository_.update(frame);
     } catch (const std::exception& error) {
+        pauseCaptureRun();
         LogEvent event;
         event.severity = LogSeverity::Error;
         event.event = QStringLiteral("capture.frame.metadata_persistence_failed");
@@ -383,10 +527,67 @@ domain::Frame CaptureFrameService::execute(
         throw CaptureFrameError(
             CaptureFrameStage::PersistMetadata,
             frame.id(),
-            error.what());
+            error.what(),
+            std::nullopt,
+            {CaptureRecoveryDecision::Pause, CaptureRecoveryDecision::Abort});
     }
     reportState(frame, FrameState::Validating, progress);
     return frame;
+}
+
+void CaptureFrameService::applyRecoveryDecision(
+    const domain::FrameId& frameId,
+    CaptureRecoveryDecision decision)
+{
+    if (captureRun_.state() != CaptureRunState::Paused) {
+        throw std::logic_error("Capture run must be Paused before applying a recovery decision");
+    }
+    const auto frame = frameRepository_.findById(frameId);
+    if ((frame && frame->captureRunId() != captureRun_.id())
+        || (!frame && !recoverableUnstartedFrames_.contains(frameId))) {
+        throw std::invalid_argument("Recovery decision refers to an unknown frame");
+    }
+
+    switch (decision) {
+    case CaptureRecoveryDecision::Retry:
+        if ((frame && frame->state() != FrameState::Pending)
+            || (!frame && !retryableUnstartedFrames_.contains(frameId))) {
+            throw std::logic_error(
+                "Retry is only safe when no exposure was started for this frame");
+        }
+        break;
+    case CaptureRecoveryDecision::Pause:
+    case CaptureRecoveryDecision::Abort:
+        break;
+    default:
+        throw std::invalid_argument("Invalid capture recovery decision");
+    }
+
+    LogEvent event;
+    event.severity = LogSeverity::Info;
+    event.event = QStringLiteral("capture.recovery.decision");
+    event.message = QStringLiteral("User selected a capture recovery action");
+    event.sessionId = session_.id();
+    event.captureRunId = captureRun_.id();
+    event.frameId = frameId;
+    event.operation = QStringLiteral("capture.recovery");
+    event.state = recoveryDecisionName(decision);
+    loggingService_.log(event);
+
+    switch (decision) {
+    case CaptureRecoveryDecision::Retry:
+        captureRunRepository_.updateState(captureRun_.id(), CaptureRunState::Running);
+        captureRun_.resume();
+        break;
+    case CaptureRecoveryDecision::Pause:
+        break;
+    case CaptureRecoveryDecision::Abort:
+        captureRunRepository_.updateState(captureRun_.id(), CaptureRunState::Failed);
+        captureRun_.fail();
+        break;
+    default:
+        break;
+    }
 }
 
 void CaptureFrameService::reportState(
@@ -408,9 +609,14 @@ void CaptureFrameService::reportState(
         : std::nullopt;
     event.state = stateName;
     event.captureSettings = captureRun_.settings();
-    loggingService_.log(event);
-    if (progress) {
-        progress(CaptureFrameProgress{frame.id(), frame.state(), std::nullopt});
+    try {
+        loggingService_.log(event);
+        if (progress) {
+            progress(CaptureFrameProgress{frame.id(), frame.state(), std::nullopt});
+        }
+    } catch (...) {
+        pauseCaptureRun();
+        throw;
     }
 }
 
@@ -422,8 +628,20 @@ void CaptureFrameService::reportState(
     std::optional<domain::CameraError> cameraError)
 {
     const FrameState previousState = frame.state();
-    frame.fail(message);
-    frameRepository_.update(frame);
+    std::vector<CaptureRecoveryDecision> recoveryOptions{
+        CaptureRecoveryDecision::Pause,
+        CaptureRecoveryDecision::Abort
+    };
+    if (frame.state() == FrameState::Pending) {
+        recoveryOptions.insert(recoveryOptions.begin(), CaptureRecoveryDecision::Retry);
+    } else {
+        frame.fail(message);
+    }
+
+    pauseCaptureRun();
+    if (frame.state() == FrameState::Failed) {
+        frameRepository_.update(frame);
+    }
 
     LogEvent event;
     event.timestamp = std::chrono::system_clock::now();
@@ -433,9 +651,9 @@ void CaptureFrameService::reportState(
     event.sessionId = session_.id();
     event.captureRunId = captureRun_.id();
     event.frameId = frame.id();
-    event.operation = QStringLiteral("captureFrame");
+    event.operation = captureFrameStageName(stage);
     event.previousState = frameStateName(previousState);
-    event.state = QStringLiteral("Failed");
+    event.state = frameStateName(frame.state());
     event.errorCode = cameraError
         ? std::optional<QString>{cameraErrorCodeName(cameraError->code)}
         : std::nullopt;
@@ -447,7 +665,66 @@ void CaptureFrameService::reportState(
     if (progress) {
         progress(CaptureFrameProgress{frame.id(), frame.state(), std::nullopt});
     }
-    throw CaptureFrameError(stage, frame.id(), std::move(message), std::move(cameraError));
+    throw CaptureFrameError(
+        stage,
+        frame.id(),
+        std::move(message),
+        std::move(cameraError),
+        std::move(recoveryOptions));
+}
+
+[[noreturn]] void CaptureFrameService::failBeforeFrame(
+    const domain::FrameId& frameId,
+    CaptureFrameStage stage,
+    std::string message,
+    std::optional<domain::CameraError> cameraError,
+    bool retryAllowed)
+{
+    pauseCaptureRun();
+    recoverableUnstartedFrames_.insert(frameId);
+    if (retryAllowed) {
+        retryableUnstartedFrames_.insert(frameId);
+    }
+
+    LogEvent event;
+    event.severity = LogSeverity::Error;
+    event.event = QStringLiteral("capture.frame.failed_before_start");
+    event.message = QString::fromStdString(message);
+    event.sessionId = session_.id();
+    event.captureRunId = captureRun_.id();
+    event.frameId = frameId;
+    event.operation = captureFrameStageName(stage);
+    event.errorCode = cameraError
+        ? std::optional<QString>{cameraErrorCodeName(cameraError->code)}
+        : std::nullopt;
+    event.technicalDetails = cameraError
+        ? std::optional<QString>{QString::fromStdString(cameraError->operation)}
+        : std::nullopt;
+    event.captureSettings = captureRun_.settings();
+    loggingService_.log(event);
+
+    std::vector<CaptureRecoveryDecision> recoveryOptions{
+        CaptureRecoveryDecision::Pause,
+        CaptureRecoveryDecision::Abort
+    };
+    if (retryAllowed) {
+        recoveryOptions.insert(recoveryOptions.begin(), CaptureRecoveryDecision::Retry);
+    }
+    throw CaptureFrameError(
+        stage,
+        frameId,
+        std::move(message),
+        std::move(cameraError),
+        std::move(recoveryOptions));
+}
+
+void CaptureFrameService::pauseCaptureRun()
+{
+    if (captureRun_.state() == CaptureRunState::Running
+        || captureRun_.state() == CaptureRunState::StopRequested) {
+        captureRunRepository_.updateState(captureRun_.id(), CaptureRunState::Paused);
+        captureRun_.pause();
+    }
 }
 
 } // namespace application
