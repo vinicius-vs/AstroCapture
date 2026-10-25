@@ -1,8 +1,12 @@
 #include "domain/camera.h"
+#include "infrastructure/camera/simulated_camera.h"
 
 #include <QtTest>
 
+#include <sstream>
+
 using namespace domain;
+using namespace infrastructure;
 using namespace std::chrono_literals;
 
 namespace {
@@ -111,6 +115,110 @@ private slots:
         QCOMPARE(error.code, CameraErrorCode::UnsupportedOperation);
         QCOMPARE(error.operation, std::string("startLiveView"));
         QVERIFY(!error.message.empty());
+    }
+
+    void simulatedCameraRequiresConnectionAndReportsCapabilities()
+    {
+        SimulatedCamera camera;
+
+        const auto settingsBeforeConnect = camera.settings();
+        QVERIFY(std::holds_alternative<CameraError>(settingsBeforeConnect));
+        QCOMPARE(
+            std::get<CameraError>(settingsBeforeConnect).code,
+            CameraErrorCode::NotConnected);
+        const auto connection = camera.connect();
+        QVERIFY(std::holds_alternative<std::monostate>(connection));
+
+        const auto capabilitiesResult = camera.capabilities();
+        QVERIFY(std::holds_alternative<CameraCapabilities>(capabilitiesResult));
+        const CameraCapabilities& capabilities =
+            std::get<CameraCapabilities>(capabilitiesResult);
+        QCOMPARE(capabilities.exposure.state, CapabilityState::Supported);
+        QCOMPARE(capabilities.exposure.minimum, std::optional(1ms));
+        QCOMPARE(capabilities.exposure.maximum, std::optional(30min));
+        QCOMPARE(capabilities.iso.state, CapabilityState::Supported);
+        QCOMPARE(
+            capabilities.iso.values,
+            (std::vector<unsigned int>{100, 200, 400, 800, 1600, 3200, 6400}));
+        QCOMPARE(capabilities.liveView, CapabilityState::Unavailable);
+
+        const auto initialSettings = camera.settings();
+        QVERIFY(std::holds_alternative<CameraSettings>(initialSettings));
+        QCOMPARE(std::get<CameraSettings>(initialSettings).exposure, std::optional(5s));
+        QCOMPARE(std::get<CameraSettings>(initialSettings).iso, std::optional(800U));
+    }
+
+    void simulatedCameraAppliesOnlySupportedSettings()
+    {
+        SimulatedCamera camera;
+        camera.connect();
+
+        QVERIFY(std::holds_alternative<std::monostate>(camera.applySettings({2s, 1600})));
+        const auto updatedSettings = camera.settings();
+        QVERIFY(std::holds_alternative<CameraSettings>(updatedSettings));
+        QCOMPARE(std::get<CameraSettings>(updatedSettings).exposure, std::optional(2s));
+        QCOMPARE(std::get<CameraSettings>(updatedSettings).iso, std::optional(1600U));
+
+        const auto badExposure = camera.applySettings({31min, std::nullopt});
+        QVERIFY(std::holds_alternative<CameraError>(badExposure));
+        QCOMPARE(std::get<CameraError>(badExposure).code, CameraErrorCode::InvalidSettings);
+        const auto badIso = camera.applySettings({std::nullopt, 125});
+        QVERIFY(std::holds_alternative<CameraError>(badIso));
+        QCOMPARE(std::get<CameraError>(badIso).code, CameraErrorCode::InvalidSettings);
+
+        const auto unchangedSettings = camera.settings();
+        QCOMPARE(std::get<CameraSettings>(unchangedSettings).exposure, std::optional(2s));
+        QCOMPARE(std::get<CameraSettings>(unchangedSettings).iso, std::optional(1600U));
+    }
+
+    void simulatedCameraCapturesAndTransfersDeterministicTestImage()
+    {
+        SimulatedCamera camera;
+        camera.connect();
+
+        const auto captureResult = camera.capture(CaptureRequest{CameraSettings{3s, 400}});
+        QVERIFY(std::holds_alternative<CameraCapture>(captureResult));
+        const CameraCapture capture = std::get<CameraCapture>(captureResult);
+        QVERIFY(capture.id.starts_with("simulated-capture-"));
+        QCOMPARE(capture.fileExtension, std::string(".pgm"));
+        QVERIFY(capture.expectedSize.has_value());
+
+        std::ostringstream destination(std::ios::binary);
+        std::optional<TransferProgress> reportedProgress;
+        const auto transferResult = camera.transfer(
+            capture,
+            destination,
+            [&reportedProgress](const TransferProgress& progress) {
+                reportedProgress = progress;
+            });
+        QVERIFY(std::holds_alternative<std::monostate>(transferResult));
+        const std::string image = destination.str();
+        QVERIFY(image.starts_with("P5\n8 8\n255\n"));
+        QCOMPARE(image.size(), static_cast<std::size_t>(*capture.expectedSize));
+        QVERIFY(reportedProgress.has_value());
+        QCOMPARE(reportedProgress->bytesTransferred, *capture.expectedSize);
+        QCOMPARE(reportedProgress->totalBytes, capture.expectedSize);
+
+        CameraCapture invalidCapture = capture;
+        invalidCapture.expectedSize = *capture.expectedSize + 1;
+        std::ostringstream invalidDestination(std::ios::binary);
+        const auto invalidTransfer = camera.transfer(invalidCapture, invalidDestination);
+        QVERIFY(std::holds_alternative<CameraError>(invalidTransfer));
+        QCOMPARE(std::get<CameraError>(invalidTransfer).code, CameraErrorCode::TransferFailed);
+        QVERIFY(invalidDestination.str().empty());
+
+        const auto unsupportedLiveView = camera.startLiveView();
+        QVERIFY(std::holds_alternative<CameraError>(unsupportedLiveView));
+        QCOMPARE(
+            std::get<CameraError>(unsupportedLiveView).code,
+            CameraErrorCode::UnsupportedOperation);
+
+        camera.disconnect();
+        const auto disconnectedCapture = camera.capture({});
+        QVERIFY(std::holds_alternative<CameraError>(disconnectedCapture));
+        QCOMPARE(
+            std::get<CameraError>(disconnectedCapture).code,
+            CameraErrorCode::NotConnected);
     }
 };
 
