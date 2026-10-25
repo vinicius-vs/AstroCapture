@@ -2,6 +2,7 @@
 
 #include "domain/camera.h"
 
+#include <QElapsedTimer>
 #include <QMainWindow>
 #include <QString>
 
@@ -14,6 +15,7 @@ class QLabel;
 class QListWidget;
 class QProgressBar;
 class QPushButton;
+class QTimer;
 class QThread;
 class QStackedWidget;
 class QWidget;
@@ -66,11 +68,17 @@ private:
     QListWidget* sessionList_{};
     QLabel* activeSessionLabel_{};
     QLabel* captureStatusLabel_{};
+    QLabel* captureSequenceMetricsLabel_{};
+    QLabel* captureElapsedLabel_{};
+    QLabel* captureStatisticsLabel_{};
     QProgressBar* captureProgressBar_{};
     QPushButton* captureStartButton_{};
     QPushButton* captureStopButton_{};
     QPushButton* captureBackButton_{};
     QThread* captureThread_{};
+    QTimer* captureUiTimer_{};
+    QElapsedTimer captureElapsedTimer_;
+    QString captureExposureText_;
     std::shared_ptr<std::atomic_bool> captureStopRequested_;
     bool closeAfterCapture_{};
     std::string activeSessionId_;

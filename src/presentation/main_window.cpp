@@ -437,6 +437,17 @@ MainWindow::MainWindow(
 
     connect(homeNavigationButton_, &QPushButton::clicked, this, [this] { showHomePage(); });
     connect(libraryNavigationButton_, &QPushButton::clicked, this, [this] { showSessionsPage(); });
+    captureUiTimer_ = new QTimer(this);
+    captureUiTimer_->setInterval(1000);
+    connect(captureUiTimer_, &QTimer::timeout, this, [this] {
+        if (captureElapsedLabel_ && captureElapsedTimer_.isValid()) {
+            const qint64 elapsedSeconds = captureElapsedTimer_.elapsed() / 1000;
+            captureElapsedLabel_->setText(
+                QStringLiteral("Tempo decorrido: %1:%2")
+                    .arg(elapsedSeconds / 60, 2, 10, QLatin1Char('0'))
+                    .arg(elapsedSeconds % 60, 2, 10, QLatin1Char('0')));
+        }
+    });
     sequencesButton->setEnabled(false);
     settingsButton->setEnabled(false);
 
@@ -1155,6 +1166,25 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
     captureProgressBar_->hide();
     layout->addWidget(captureProgressBar_);
 
+    captureSequenceMetricsLabel_ = makeTextLabel(
+        QStringLiteral("Aguardando início da sequência."),
+        QStringLiteral("captureSequenceMetrics"),
+        page);
+    captureSequenceMetricsLabel_->setWordWrap(true);
+    captureElapsedLabel_ = makeTextLabel(
+        QStringLiteral("Tempo decorrido: 00:00"),
+        QStringLiteral("captureElapsedTime"),
+        page);
+    layout->addWidget(captureSequenceMetricsLabel_);
+    layout->addWidget(captureElapsedLabel_);
+
+    captureStatisticsLabel_ = makeTextLabel(
+        QStringLiteral("As estatísticas aparecerão após carregar os dados da sessão."),
+        QStringLiteral("captureStatistics"),
+        page);
+    captureStatisticsLabel_->setWordWrap(true);
+    layout->addWidget(captureStatisticsLabel_);
+
     auto* buttons = new QDialogButtonBox(page);
     auto* startButton = buttons->addButton(
         QStringLiteral("Iniciar captura"),
@@ -1224,6 +1254,11 @@ void MainWindow::startCapture(domain::CaptureRun captureRun)
         throw std::logic_error("A capture sequence is already running");
     }
 
+    captureExposureText_ = QStringLiteral("%1 s").arg(
+        static_cast<double>(captureRun.settings().exposure.count()) / 1'000'000.0,
+        0,
+        'f',
+        3);
     captureStopRequested_ = std::make_shared<std::atomic_bool>(false);
     auto* worker = new presentation::CaptureWorker(
         applicationDataDirectory_,
@@ -1240,11 +1275,22 @@ void MainWindow::startCapture(domain::CaptureRun captureRun)
         worker,
         &presentation::CaptureWorker::progressChanged,
         this,
-        [this](quint32 completed, quint32 planned, const QString& details) {
+        [this](quint32 completed,
+               quint32 planned,
+               quint32 failed,
+               const QString& details,
+               qint64 elapsedMilliseconds) {
             if (planned == 0) {
                 captureProgressBar_->setRange(0, 0);
-                captureProgressBar_->setFormat(
-                    QStringLiteral("%1 quadros · contínua").arg(completed));
+                captureProgressBar_->setFormat(QStringLiteral("Captura contínua"));
+                captureSequenceMetricsLabel_->setText(
+                    QStringLiteral("Concluídos: %1 · Falhas: %2 · Exposição: %3%4")
+                        .arg(completed)
+                        .arg(failed)
+                        .arg(captureExposureText_)
+                        .arg(details.isEmpty()
+                                 ? QString{}
+                                 : QStringLiteral("\n%1").arg(details)));
             } else {
                 captureProgressBar_->setRange(0, static_cast<int>(planned));
                 captureProgressBar_->setValue(static_cast<int>(completed));
@@ -1252,8 +1298,34 @@ void MainWindow::startCapture(domain::CaptureRun captureRun)
                     QStringLiteral("%1 / %2 quadros")
                         .arg(completed)
                         .arg(planned));
+                const quint32 pending = planned > completed + failed
+                    ? planned - completed - failed
+                    : 0;
+                captureSequenceMetricsLabel_->setText(
+                    QStringLiteral(
+                        "Planejados: %1 · Concluídos: %2 · Pendentes: %3 · Falhas: %4%5")
+                        .arg(planned)
+                        .arg(completed)
+                        .arg(pending)
+                        .arg(failed)
+                        .arg(details.isEmpty()
+                                 ? QStringLiteral(" · Exposição: %1").arg(captureExposureText_)
+                                 : QStringLiteral(" · Exposição: %1\n%2")
+                                       .arg(captureExposureText_, details)));
             }
-            captureStatusLabel_->setText(details);
+            const qint64 elapsedSeconds = elapsedMilliseconds / 1000;
+            captureElapsedLabel_->setText(
+                QStringLiteral("Tempo decorrido: %1:%2")
+                    .arg(elapsedSeconds / 60, 2, 10, QLatin1Char('0'))
+                    .arg(elapsedSeconds % 60, 2, 10, QLatin1Char('0')));
+        },
+        Qt::QueuedConnection);
+    connect(
+        worker,
+        &presentation::CaptureWorker::statisticsChanged,
+        this,
+        [this](const QString& details) {
+            captureStatisticsLabel_->setText(details);
         },
         Qt::QueuedConnection);
     connect(
@@ -1297,13 +1369,18 @@ void MainWindow::startCapture(domain::CaptureRun captureRun)
         homeNavigationButton_->setEnabled(true);
         libraryNavigationButton_->setEnabled(true);
         captureStopRequested_.reset();
+        captureUiTimer_->stop();
         if (closeAfterCapture_) {
             QTimer::singleShot(0, this, &QWidget::close);
         }
     });
 
     captureStatusLabel_->setStyleSheet(QStringLiteral("color:#49e3b6;"));
-    captureStatusLabel_->setText(QStringLiteral("Iniciando captura…"));
+    captureStatusLabel_->setText(QStringLiteral("Executando sequência…"));
+    captureSequenceMetricsLabel_->setText(QStringLiteral("Preparando sequência…"));
+    captureElapsedTimer_.start();
+    captureElapsedLabel_->setText(QStringLiteral("Tempo decorrido: 00:00"));
+    captureUiTimer_->start();
     captureProgressBar_->setRange(0, 0);
     captureProgressBar_->setFormat(QStringLiteral("Preparando sequência…"));
     captureProgressBar_->show();

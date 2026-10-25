@@ -134,7 +134,7 @@ private slots:
             worker,
             &presentation::CaptureWorker::progressChanged,
             this,
-            [stopRequested](quint32, quint32, const QString& details) {
+            [stopRequested](quint32, quint32, quint32, const QString& details, qint64) {
                 if (details.contains(QStringLiteral("Expondo"))) {
                     stopRequested->store(true);
                 }
@@ -450,6 +450,19 @@ private slots:
                 QStringLiteral("captureExecutionThread"));
             return !thread || !thread->isRunning();
         }(), 3000);
+        auto* statisticsLabel =
+            window.findChild<QLabel*>(QStringLiteral("captureStatistics"));
+        QVERIFY(statisticsLabel);
+        const QString statisticsText = statisticsLabel->text();
+        QVERIFY(statisticsText.contains(QStringLiteral("Sessão: 3 concluídos")));
+        QVERIFY(statisticsText.contains(QStringLiteral("Light: 3")));
+        QVERIFY(statisticsText.contains(QStringLiteral("6.00 s de exposição")));
+        QVERIFY(statisticsText.contains(QStringLiteral("Noite 25/10/2026: 3 concluídos")));
+        auto* sequenceMetrics =
+            window.findChild<QLabel*>(QStringLiteral("captureSequenceMetrics"));
+        QVERIFY(sequenceMetrics);
+        QVERIFY(sequenceMetrics->text().contains(QStringLiteral("Pendentes: 0")));
+        QVERIFY(sequenceMetrics->text().contains(QStringLiteral("Falhas: 0")));
 
         const auto sessions = repository.findAll();
         QCOMPARE(sessions.size(), std::size_t{1});

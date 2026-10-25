@@ -26,7 +26,13 @@ public slots:
     void execute();
 
 signals:
-    void progressChanged(quint32 completed, quint32 planned, const QString& details);
+    void progressChanged(
+        quint32 completed,
+        quint32 planned,
+        quint32 failed,
+        const QString& details,
+        qint64 elapsedMilliseconds);
+    void statisticsChanged(const QString& details);
     void captureCompleted(quint32 completed, bool paused);
     void captureFailed(const QString& message);
     void finished();

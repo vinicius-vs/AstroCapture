@@ -1,5 +1,6 @@
 #include "application/capture_frame_service.h"
 #include "application/capture_sequence_service.h"
+#include "application/capture_statistics_service.h"
 #include "domain/repositories/repository_errors.h"
 #include "infrastructure/camera/simulated_camera.h"
 #include "infrastructure/persistence/sqlite_database.h"
@@ -245,6 +246,86 @@ class CaptureFrameServiceTest final : public QObject
     Q_OBJECT
 
 private slots:
+    void statisticsCountOnlyPersistedCompletedFramesAndSeparateNights()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(directory.path());
+
+        const auto persistCompletedFrame = [&fixture](Frame frame) {
+            frame.startExposure(
+                std::chrono::time_point_cast<std::chrono::microseconds>(
+                    std::chrono::system_clock::now()));
+            fixture.frames.update(frame);
+            frame.startTransfer();
+            fixture.frames.update(frame);
+            frame.startValidation();
+            fixture.frames.update(frame);
+            frame.completeValidation("image.pgm", 64);
+            fixture.frames.update(frame);
+        };
+
+        Frame lightFrame("light-1", fixture.captureRun.id(), FrameType::Light, 5s, 800);
+        fixture.frames.create(lightFrame);
+        persistCompletedFrame(lightFrame);
+
+        Frame failedFrame("failed-1", fixture.captureRun.id(), FrameType::Light, 5s, 800);
+        fixture.frames.create(failedFrame);
+        failedFrame.startExposure(
+            std::chrono::time_point_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now()));
+        fixture.frames.update(failedFrame);
+        failedFrame.fail("Injected capture failure");
+        fixture.frames.update(failedFrame);
+
+        CaptureSettings darkSettings{FrameType::Dark, 3s, 800, CaptureMode::Finite, 2};
+        CaptureRun sameNightRun(
+            "run-2",
+            fixture.session.id(),
+            std::chrono::year{2026} / 10 / 25,
+            darkSettings);
+        std::vector<Frame> darkFrames{
+            Frame("dark-1", sameNightRun.id(), FrameType::Dark, 3s, 800),
+            Frame("dark-pending", sameNightRun.id(), FrameType::Dark, 3s, 800)
+        };
+        fixture.runs.createWithFrames(sameNightRun, darkFrames);
+        persistCompletedFrame(darkFrames.front());
+
+        CaptureSettings flatSettings{FrameType::Flat, 2s, 800, CaptureMode::Finite, 1};
+        CaptureRun previousNightRun(
+            "run-3",
+            fixture.session.id(),
+            std::chrono::year{2026} / 10 / 24,
+            flatSettings);
+        std::vector<Frame> flatFrames{
+            Frame("flat-1", previousNightRun.id(), FrameType::Flat, 2s, 800)
+        };
+        fixture.runs.createWithFrames(previousNightRun, flatFrames);
+        persistCompletedFrame(flatFrames.front());
+
+        CaptureStatisticsService statisticsService(fixture.runs, fixture.frames);
+        const CaptureStatisticsSnapshot statistics = statisticsService.forSession(
+            fixture.session.id(),
+            std::chrono::year{2026} / 10 / 25);
+
+        QCOMPARE(statistics.session.sequenceCount, std::uint64_t{3});
+        QCOMPARE(statistics.session.completedFrameCount, std::uint64_t{3});
+        QCOMPARE(statistics.session.failedFrameCount, std::uint64_t{1});
+        QCOMPARE(statistics.session.completedFramesByType[0], std::uint64_t{1});
+        QCOMPARE(statistics.session.completedFramesByType[1], std::uint64_t{1});
+        QCOMPARE(statistics.session.completedFramesByType[2], std::uint64_t{1});
+        QCOMPARE(statistics.session.exposureMicroseconds, std::uint64_t{10'000'000});
+        QVERIFY(statistics.session.lastCapturedAt.has_value());
+
+        QCOMPARE(statistics.night.sequenceCount, std::uint64_t{2});
+        QCOMPARE(statistics.night.completedFrameCount, std::uint64_t{2});
+        QCOMPARE(statistics.night.failedFrameCount, std::uint64_t{1});
+        QCOMPARE(statistics.night.completedFramesByType[0], std::uint64_t{1});
+        QCOMPARE(statistics.night.completedFramesByType[1], std::uint64_t{1});
+        QCOMPARE(statistics.night.completedFramesByType[2], std::uint64_t{0});
+        QCOMPARE(statistics.night.exposureMicroseconds, std::uint64_t{8'000'000});
+    }
+
     void simulatedCaptureStoresImageAndCompletedMetadata()
     {
         QTemporaryDir directory;
