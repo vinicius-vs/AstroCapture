@@ -24,6 +24,7 @@ struct SimulatedCameraOptions
     std::chrono::milliseconds transferChunkDelay{};
     std::uint64_t transferChunkSize{16};
     SimulatedCameraFailurePlan failures;
+    bool liveViewSupported{};
 };
 
 class SimulatedCamera final : public domain::ICamera
@@ -50,7 +51,7 @@ public:
     domain::CameraOperationResult stopLiveView() override;
 
 private:
-    static domain::CameraCapabilities supportedCapabilities();
+    domain::CameraCapabilities supportedCapabilities() const;
 
     SimulatedCameraOptions options_;
     bool connected_{};
@@ -58,6 +59,7 @@ private:
     std::uint64_t applySettingsCallCount_{};
     std::uint64_t captureCallCount_{};
     std::uint64_t transferCallCount_{};
+    bool liveViewActive_{};
     domain::CameraSettings settings_{
         std::chrono::seconds{5},
         800

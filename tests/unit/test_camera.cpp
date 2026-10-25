@@ -150,6 +150,30 @@ private slots:
         QCOMPARE(std::get<CameraSettings>(initialSettings).iso, std::optional(800U));
     }
 
+    void simulatedCameraExercisesSupportedLiveViewWithoutCaptureOverlap()
+    {
+        SimulatedCameraOptions options;
+        options.liveViewSupported = true;
+        SimulatedCamera camera(options);
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
+
+        const auto capabilities = camera.capabilities();
+        QVERIFY(std::holds_alternative<CameraCapabilities>(capabilities));
+        QCOMPARE(
+            std::get<CameraCapabilities>(capabilities).liveView,
+            CapabilityState::Supported);
+        QVERIFY(std::holds_alternative<std::monostate>(camera.startLiveView()));
+
+        const auto captureWhileActive = camera.capture(CaptureRequest{});
+        QVERIFY(std::holds_alternative<CameraError>(captureWhileActive));
+        QCOMPARE(
+            std::get<CameraError>(captureWhileActive).code,
+            CameraErrorCode::UnsupportedOperation);
+
+        QVERIFY(std::holds_alternative<std::monostate>(camera.stopLiveView()));
+        QVERIFY(std::holds_alternative<CameraCapture>(camera.capture(CaptureRequest{})));
+    }
+
     void simulatedCameraAppliesOnlySupportedSettings()
     {
         SimulatedCamera camera;

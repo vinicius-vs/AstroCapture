@@ -359,6 +359,7 @@ MainWindow::MainWindow(
     auto* shell = new ResizeAwareWidget(this);
     shell->setObjectName(QStringLiteral("applicationShell"));
     shell->setMinimumWidth(0);
+    shell->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     shell->setStyleSheet(QString::fromLatin1(DashboardStyle));
 
     auto* shellLayout = new QHBoxLayout(shell);
@@ -439,6 +440,7 @@ MainWindow::MainWindow(
     pages_ = new QStackedWidget(shell);
     pages_->setObjectName(QStringLiteral("mainPages"));
     pages_->setMinimumWidth(0);
+    pages_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     homePage_ = createHomePage();
     sessionsPage_ = createSessionsPage();
     pages_->addWidget(homePage_);
@@ -497,7 +499,7 @@ MainWindow::MainWindow(
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    if (captureThread_ && captureThread_->isRunning()) {
+    if (captureThread_) {
         closeAfterCapture_ = true;
         requestCaptureStop();
         if (captureStatusLabel_) {
@@ -505,6 +507,17 @@ void MainWindow::closeEvent(QCloseEvent* event)
                 QStringLiteral("Aguardando o quadro atual terminar antes de fechar."));
         }
         event->ignore();
+        return;
+    }
+    if (liveViewOperationPending_) {
+        closeAfterLiveViewStop_ = true;
+        event->ignore();
+        return;
+    }
+    if (liveViewActive_) {
+        closeAfterLiveViewStop_ = true;
+        event->ignore();
+        beginLiveViewOperation(false);
         return;
     }
     event->accept();
@@ -1009,6 +1022,14 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
         return;
     }
 
+    liveViewAvailable_ = capabilities.liveView == domain::CapabilityState::Supported;
+    if (!liveViewAvailable_) {
+        liveViewActive_ = false;
+    }
+    liveViewStatusText_ = liveViewAvailable_
+        ? QStringLiteral("Live View desligado.")
+        : QStringLiteral("Live View indisponível nesta câmera.");
+
     ++previewRequestId_;
     if (captureConfigurationPage_) {
         pages_->removeWidget(captureConfigurationPage_);
@@ -1026,6 +1047,7 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
     auto* page = new QWidget(scroll);
     page->setObjectName(QStringLiteral("captureConfigurationContent"));
     page->setMinimumWidth(0);
+    page->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     page->setAutoFillBackground(true);
     page->setStyleSheet(QStringLiteral(
         "QLabel { color:#e5edf3; }"
@@ -1205,6 +1227,32 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
     layout->addWidget(captureStatisticsLabel_);
 
     layout->addWidget(makeTextLabel(
+        QStringLiteral("Live View"),
+        QStringLiteral("sectionTitle"),
+        page));
+    liveViewStatusLabel_ = makeTextLabel(
+        liveViewStatusText_,
+        QStringLiteral("liveViewStatus"),
+        page);
+    liveViewStatusLabel_->setWordWrap(true);
+    layout->addWidget(liveViewStatusLabel_);
+    auto* liveViewButtons = new QHBoxLayout;
+    liveViewStartButton_ = new QPushButton(QStringLiteral("Iniciar Live View"), page);
+    liveViewStartButton_->setObjectName(QStringLiteral("startLiveViewButton"));
+    liveViewStopButton_ = new QPushButton(QStringLiteral("Encerrar Live View"), page);
+    liveViewStopButton_->setObjectName(QStringLiteral("stopLiveViewButton"));
+    connect(liveViewStartButton_, &QPushButton::clicked, this, [this] {
+        beginLiveViewOperation(true);
+    });
+    connect(liveViewStopButton_, &QPushButton::clicked, this, [this] {
+        beginLiveViewOperation(false);
+    });
+    liveViewButtons->addWidget(liveViewStartButton_);
+    liveViewButtons->addWidget(liveViewStopButton_);
+    liveViewButtons->addStretch();
+    layout->addLayout(liveViewButtons);
+
+    layout->addWidget(makeTextLabel(
         QStringLiteral("Último quadro concluído"),
         QStringLiteral("sectionTitle"),
         page));
@@ -1231,7 +1279,7 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
         QDialogButtonBox::AcceptRole);
     startButton->setObjectName(QStringLiteral("startCaptureButton"));
     captureStartButton_ = startButton;
-    startButton->setEnabled(exposureAvailable);
+    captureExposureAvailable_ = exposureAvailable;
     captureBackButton_ = buttons->addButton(QDialogButtonBox::Cancel);
     captureBackButton_->setText(QStringLiteral("Voltar"));
     captureBackButton_->setObjectName(QStringLiteral("captureBackButton"));
@@ -1286,9 +1334,112 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
     setNavigationSelection(returnHome);
     pages_->addWidget(scroll);
     pages_->setCurrentWidget(scroll);
+    updateLiveViewControls();
     QTimer::singleShot(0, this, [this, sessionId] {
         loadCapturePreview(sessionId);
     });
+}
+
+void MainWindow::beginLiveViewOperation(bool start)
+{
+    if (!liveViewAvailable_ || liveViewOperationPending_
+        || (start && liveViewActive_) || (!start && !liveViewActive_)
+        || captureThread_) {
+        return;
+    }
+
+    liveViewOperationPending_ = true;
+    liveViewStatusText_ = start
+        ? QStringLiteral("Iniciando Live View…")
+        : QStringLiteral("Encerrando Live View…");
+    updateLiveViewControls();
+
+    auto* watcher = new QFutureWatcher<domain::CameraOperationResult>(this);
+    connect(watcher, &QFutureWatcher<domain::CameraOperationResult>::finished, this,
+            [this, watcher, start] {
+        const domain::CameraOperationResult result = watcher->result();
+        watcher->deleteLater();
+        liveViewOperationPending_ = false;
+
+        const auto* error = std::get_if<domain::CameraError>(&result);
+        if (error) {
+            if (start && error->code == domain::CameraErrorCode::UnsupportedOperation) {
+                liveViewAvailable_ = false;
+                liveViewStatusText_ = QStringLiteral("Live View indisponível nesta câmera.");
+            } else {
+                liveViewStatusText_ = QStringLiteral("%1 falhou: %2")
+                    .arg(
+                        start ? QStringLiteral("Iniciar Live View")
+                              : QStringLiteral("Encerrar Live View"),
+                        QString::fromStdString(error->message));
+            }
+        } else {
+            liveViewActive_ = start;
+            liveViewStatusText_ = liveViewActive_
+                ? QStringLiteral("Live View ativo.")
+                : QStringLiteral("Live View desligado.");
+        }
+        updateLiveViewControls();
+
+        if (!closeAfterLiveViewStop_) {
+            return;
+        }
+        if (liveViewActive_) {
+            if (!error) {
+                beginLiveViewOperation(false);
+            } else {
+                closeAfterLiveViewStop_ = false;
+                QMessageBox::warning(
+                    this,
+                    QStringLiteral("Não foi possível encerrar o Live View"),
+                    QString::fromStdString(error->message));
+            }
+            return;
+        }
+        closeAfterLiveViewStop_ = false;
+        QTimer::singleShot(0, this, &QWidget::close);
+    });
+    watcher->setFuture(QtConcurrent::run([this, start] {
+        try {
+            return start ? camera_.startLiveView() : camera_.stopLiveView();
+        } catch (const std::exception& error) {
+            return domain::CameraOperationResult{domain::CameraError{
+                domain::CameraErrorCode::Unknown,
+                error.what(),
+                start ? "startLiveView" : "stopLiveView",
+                std::nullopt}};
+        }
+    }));
+}
+
+void MainWindow::updateLiveViewControls()
+{
+    const bool captureRunning = captureThread_ != nullptr;
+    const bool cameraBusy = captureRunning || liveViewOperationPending_ || liveViewActive_;
+    if (liveViewStatusLabel_) {
+        liveViewStatusLabel_->setText(liveViewStatusText_);
+    }
+    if (liveViewStartButton_) {
+        liveViewStartButton_->setEnabled(
+            liveViewAvailable_ && !liveViewOperationPending_ && !liveViewActive_ && !captureRunning);
+    }
+    if (liveViewStopButton_) {
+        liveViewStopButton_->setEnabled(
+            liveViewAvailable_ && liveViewActive_ && !liveViewOperationPending_ && !captureRunning);
+    }
+    if (captureStartButton_) {
+        captureStartButton_->setEnabled(
+            captureExposureAvailable_ && !liveViewActive_ && !liveViewOperationPending_ && !captureRunning);
+    }
+    if (captureBackButton_) {
+        captureBackButton_->setEnabled(!cameraBusy);
+    }
+    if (homeNavigationButton_) {
+        homeNavigationButton_->setEnabled(!cameraBusy);
+    }
+    if (libraryNavigationButton_) {
+        libraryNavigationButton_->setEnabled(!cameraBusy);
+    }
 }
 
 void MainWindow::loadCapturePreview(const std::string& sessionId)
@@ -1366,8 +1517,11 @@ void MainWindow::decodeCapturePreview(const QString& imagePath)
 
 void MainWindow::startCapture(domain::CaptureRun captureRun)
 {
-    if (captureThread_ && captureThread_->isRunning()) {
+    if (captureThread_) {
         throw std::logic_error("A capture sequence is already running");
+    }
+    if (liveViewActive_ || liveViewOperationPending_) {
+        throw std::logic_error("Stop live view before starting a capture sequence");
     }
 
     captureExposureText_ = QStringLiteral("%1 s").arg(
@@ -1497,6 +1651,7 @@ void MainWindow::startCapture(domain::CaptureRun captureRun)
         if (closeAfterCapture_) {
             QTimer::singleShot(0, this, &QWidget::close);
         }
+        updateLiveViewControls();
     });
 
     captureStatusLabel_->setStyleSheet(QStringLiteral("color:#49e3b6;"));
@@ -1510,6 +1665,7 @@ void MainWindow::startCapture(domain::CaptureRun captureRun)
     captureProgressBar_->show();
     captureStartButton_->setEnabled(false);
     captureBackButton_->setEnabled(false);
+    updateLiveViewControls();
     captureStopButton_->setEnabled(true);
     captureStopButton_->show();
     homeNavigationButton_->setEnabled(false);

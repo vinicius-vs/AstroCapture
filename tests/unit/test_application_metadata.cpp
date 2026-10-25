@@ -482,6 +482,17 @@ private slots:
         QVERIFY(pages);
         QCOMPARE(pages->currentWidget()->objectName(), QStringLiteral("captureConfigurationPage"));
         QVERIFY(!QApplication::activeModalWidget());
+        auto* liveViewStatus = window.findChild<QLabel*>(QStringLiteral("liveViewStatus"));
+        auto* startLiveViewButton =
+            window.findChild<QPushButton*>(QStringLiteral("startLiveViewButton"));
+        auto* stopLiveViewButton =
+            window.findChild<QPushButton*>(QStringLiteral("stopLiveViewButton"));
+        QVERIFY(liveViewStatus);
+        QVERIFY(startLiveViewButton);
+        QVERIFY(stopLiveViewButton);
+        QCOMPARE(liveViewStatus->text(), QStringLiteral("Live View indisponível nesta câmera."));
+        QVERIFY(!startLiveViewButton->isEnabled());
+        QVERIFY(!stopLiveViewButton->isEnabled());
         auto* previewStatus =
             window.findChild<QLabel*>(QStringLiteral("capturePreviewStatus"));
         QVERIFY(previewStatus);
@@ -631,6 +642,113 @@ private slots:
             QStringLiteral(
                 "Pré-visualização indisponível: arquivo inválido ou formato não suportado."),
             3000);
+    }
+
+    void liveViewIsManualAndDisabledDuringCapture()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        infrastructure::SqliteDatabase database(
+            QDir(directory.path()).filePath(QStringLiteral("astrocapture.sqlite3")));
+        database.open();
+        infrastructure::SqliteSessionRepository sessionRepository(database);
+        infrastructure::SqliteCaptureRunRepository captureRunRepository(database);
+        infrastructure::SqliteFrameRepository frameRepository(database);
+        infrastructure::StorageLayout storageLayout(
+            QDir(directory.path()).filePath(QStringLiteral("images")));
+        application::SessionService sessionService(sessionRepository, storageLayout);
+        const auto session = sessionService.createSession(
+            QStringLiteral("M42"),
+            QStringLiteral("Live View test"),
+            domain::SessionStage::Capture);
+        infrastructure::SimulatedCameraOptions cameraOptions;
+        cameraOptions.liveViewSupported = true;
+        cameraOptions.exposureDelay = std::chrono::milliseconds{200};
+        infrastructure::SimulatedCamera camera(cameraOptions);
+        application::CaptureConfigurationService configurationService(
+            sessionRepository,
+            captureRunRepository,
+            camera);
+        application::CapturePreviewService previewService(
+            captureRunRepository,
+            frameRepository);
+        MainWindow window(
+            sessionService,
+            configurationService,
+            camera,
+            directory.path(),
+            nullptr,
+            &previewService);
+        window.findChild<QPushButton*>(QStringLiteral("libraryNavigationButton"))->click();
+        auto* sessionList = window.findChild<QListWidget*>(QStringLiteral("sessionList"));
+        QVERIFY(sessionList);
+        auto* row = sessionList->itemWidget(sessionList->item(0));
+        QVERIFY(row);
+        auto* sessionMenu = row->findChild<QToolButton*>(QStringLiteral("sessionMenuButton"));
+        QVERIFY(sessionMenu);
+        sessionMenu->menu()->actions().at(0)->trigger();
+
+        auto* liveViewStatus = window.findChild<QLabel*>(QStringLiteral("liveViewStatus"));
+        auto* startLiveViewButton =
+            window.findChild<QPushButton*>(QStringLiteral("startLiveViewButton"));
+        auto* stopLiveViewButton =
+            window.findChild<QPushButton*>(QStringLiteral("stopLiveViewButton"));
+        auto* startCaptureButton =
+            window.findChild<QPushButton*>(QStringLiteral("startCaptureButton"));
+        QVERIFY(liveViewStatus);
+        QVERIFY(startLiveViewButton);
+        QVERIFY(stopLiveViewButton);
+        QVERIFY(startCaptureButton);
+        QVERIFY(startLiveViewButton->isEnabled());
+        QVERIFY(!stopLiveViewButton->isEnabled());
+
+        startLiveViewButton->click();
+        QTRY_COMPARE_WITH_TIMEOUT(
+            liveViewStatus->text(),
+            QStringLiteral("Live View ativo."),
+            3000);
+        QVERIFY(!startLiveViewButton->isEnabled());
+        QVERIFY(stopLiveViewButton->isEnabled());
+        QVERIFY(!startCaptureButton->isEnabled());
+
+        stopLiveViewButton->click();
+        QTRY_COMPARE_WITH_TIMEOUT(
+            liveViewStatus->text(),
+            QStringLiteral("Live View desligado."),
+            3000);
+        QVERIFY(startLiveViewButton->isEnabled());
+        QVERIFY(!stopLiveViewButton->isEnabled());
+        QVERIFY(startCaptureButton->isEnabled());
+
+        startCaptureButton->click();
+        QVERIFY(!startLiveViewButton->isEnabled());
+        QVERIFY(!stopLiveViewButton->isEnabled());
+        auto* captureStatus =
+            window.findChild<QLabel*>(QStringLiteral("captureConfigurationStatus"));
+        QVERIFY(captureStatus);
+        QTRY_VERIFY2_WITH_TIMEOUT(
+            captureStatus->text().contains(QStringLiteral("Captura concluída")),
+            qPrintable(captureStatus->text()),
+            3000);
+        QTRY_VERIFY_WITH_TIMEOUT([&window] {
+            auto* thread = window.findChild<QThread*>(
+                QStringLiteral("captureExecutionThread"));
+            return !thread || !thread->isRunning();
+        }(), 3000);
+        QCOMPARE(liveViewStatus->text(), QStringLiteral("Live View desligado."));
+        QVERIFY(startLiveViewButton->isEnabled());
+        QVERIFY(!stopLiveViewButton->isEnabled());
+        QVERIFY(startCaptureButton->isEnabled());
+        window.show();
+        startLiveViewButton->click();
+        QTRY_COMPARE_WITH_TIMEOUT(
+            liveViewStatus->text(),
+            QStringLiteral("Live View ativo."),
+            3000);
+        window.close();
+        QTRY_VERIFY_WITH_TIMEOUT(!window.isVisible(), 3000);
+        QVERIFY(std::holds_alternative<domain::CameraCapture>(
+            camera.capture(domain::CaptureRequest{})));
     }
 
     void startSessionActionOpensCaptureConfigurationPageAndCreatesSession()

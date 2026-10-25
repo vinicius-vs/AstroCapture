@@ -209,6 +209,12 @@ CameraResult<CameraCapture> SimulatedCamera::capture(const CaptureRequest& reque
             "Simulated camera is not connected",
             "capture");
     }
+    if (liveViewActive_) {
+        return error(
+            CameraErrorCode::UnsupportedOperation,
+            "Stop live view before capturing",
+            "capture");
+    }
 
     CameraSettings requestedSettings = settings_;
     if (request.settings.exposure) {
@@ -386,10 +392,14 @@ CameraOperationResult SimulatedCamera::startLiveView()
             "Simulated camera is not connected",
             "startLiveView");
     }
-    return error(
-        CameraErrorCode::UnsupportedOperation,
-        "Live view is not supported by the basic simulated camera",
-        "startLiveView");
+    if (!options_.liveViewSupported) {
+        return error(
+            CameraErrorCode::UnsupportedOperation,
+            "Live view is not supported by the basic simulated camera",
+            "startLiveView");
+    }
+    liveViewActive_ = true;
+    return std::monostate{};
 }
 
 CameraOperationResult SimulatedCamera::stopLiveView()
@@ -400,13 +410,17 @@ CameraOperationResult SimulatedCamera::stopLiveView()
             "Simulated camera is not connected",
             "stopLiveView");
     }
-    return error(
-        CameraErrorCode::UnsupportedOperation,
-        "Live view is not supported by the basic simulated camera",
-        "stopLiveView");
+    if (!options_.liveViewSupported) {
+        return error(
+            CameraErrorCode::UnsupportedOperation,
+            "Live view is not supported by the basic simulated camera",
+            "stopLiveView");
+    }
+    liveViewActive_ = false;
+    return std::monostate{};
 }
 
-CameraCapabilities SimulatedCamera::supportedCapabilities()
+CameraCapabilities SimulatedCamera::supportedCapabilities() const
 {
     CameraCapabilities result;
     result.exposure.state = CapabilityState::Supported;
@@ -414,7 +428,9 @@ CameraCapabilities SimulatedCamera::supportedCapabilities()
     result.exposure.maximum = std::chrono::minutes{30};
     result.iso.state = CapabilityState::Supported;
     result.iso.values = {100, 200, 400, 800, 1600, 3200, 6400};
-    result.liveView = CapabilityState::Unavailable;
+    result.liveView = options_.liveViewSupported
+        ? CapabilityState::Supported
+        : CapabilityState::Unavailable;
     return result;
 }
 
