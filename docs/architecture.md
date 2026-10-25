@@ -121,7 +121,7 @@ Serviços previstos:
 
 - `CaptureService`: coordena capturas e sequências.
 - `SessionService`: cria, abre, finaliza e retoma sessões.
-- `CaptureSequenceService`: controla o ciclo de vida das sequências, caso sua separação seja necessária.
+- `CaptureSequenceService`: executa sequências finitas compondo o fluxo de captura individual e mantém o progresso baseado em quadros concluídos.
 - `CaptureStatisticsService`: calcula os indicadores da sessão.
 
 Casos de uso iniciais:

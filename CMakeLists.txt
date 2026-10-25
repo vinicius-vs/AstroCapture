@@ -12,6 +12,8 @@ find_package(Qt6 6.2 REQUIRED COMPONENTS Sql Widgets)
 add_executable(astrocapture
     src/application/capture_frame_service.cpp
     src/application/capture_frame_service.h
+    src/application/capture_sequence_service.cpp
+    src/application/capture_sequence_service.h
     src/application/session_recovery_service.cpp
     src/application/session_recovery_service.h
     src/app/main.cpp
@@ -112,6 +114,8 @@ if(BUILD_TESTING)
     add_executable(astrocapture_capture_frame_tests
         src/application/capture_frame_service.cpp
         src/application/capture_frame_service.h
+        src/application/capture_sequence_service.cpp
+        src/application/capture_sequence_service.h
         src/domain/capture_entities.cpp
         src/domain/capture_entities.h
         src/domain/camera.h

@@ -246,6 +246,8 @@ O progresso deve considerar os quadros efetivamente concluídos, não apenas as 
 
 Exemplo: em uma sequência de 20 quadros, se 7 forem concluídos e o oitavo falhar, o progresso confirmado será de 7/20.
 
+O caso de uso da sequência valida o modo e a quantidade planejada, executa cada quadro pelo fluxo de captura individual e só incrementa o progresso depois que o arquivo e seus metadados estiverem confirmados. Uma falha interrompe a sequência sem remover os resultados anteriores; a recuperação é explícita e quadros inconclusivos não são repetidos automaticamente.
+
 ### 8.3 Captura contínua
 
 Na captura contínua, o sistema inicia novos quadros até que o usuário solicite a parada ou ocorra uma condição de erro.

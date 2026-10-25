@@ -1,4 +1,5 @@
 #include "application/capture_frame_service.h"
+#include "application/capture_sequence_service.h"
 #include "domain/repositories/repository_errors.h"
 #include "infrastructure/camera/simulated_camera.h"
 #include "infrastructure/persistence/sqlite_database.h"
@@ -37,6 +38,11 @@ public:
 class TransferFailingCamera final : public ICamera
 {
 public:
+    explicit TransferFailingCamera(std::size_t failOnTransfer = 1)
+        : failOnTransfer_(failOnTransfer)
+    {
+    }
+
     CameraOperationResult connect() override
     {
         return camera_.connect();
@@ -68,16 +74,20 @@ public:
     }
 
     CameraOperationResult transfer(
-        const CameraCapture&,
-        std::ostream&,
-        TransferProgressCallback) override
+        const CameraCapture& capture,
+        std::ostream& destination,
+        TransferProgressCallback progress) override
     {
-        return CameraError{
-            CameraErrorCode::TransferFailed,
-            "Injected transfer failure",
-            "transfer",
-            "TransferFailingCamera"
-        };
+        ++transferCount_;
+        if (transferCount_ == failOnTransfer_) {
+            return CameraError{
+                CameraErrorCode::TransferFailed,
+                "Injected transfer failure",
+                "transfer",
+                "TransferFailingCamera"
+            };
+        }
+        return camera_.transfer(capture, destination, std::move(progress));
     }
 
     CameraOperationResult startLiveView() override
@@ -92,6 +102,8 @@ public:
 
 private:
     SimulatedCamera camera_;
+    std::size_t failOnTransfer_;
+    std::size_t transferCount_{0};
 };
 
 class ApplyFailOnceCamera final : public ICamera
@@ -190,13 +202,16 @@ private:
 
 struct CaptureFixture
 {
-    explicit CaptureFixture(const QString& rootPath, CaptureSettings settings = {
-        FrameType::Light,
-        5s,
-        800,
-        CaptureMode::Finite,
-        1
-    })
+    explicit CaptureFixture(
+        const QString& rootPath,
+        CaptureSettings settings = {
+            FrameType::Light,
+            5s,
+            800,
+            CaptureMode::Finite,
+            1
+        },
+        bool startRun = true)
         : database(QDir(rootPath).filePath(QStringLiteral("capture.sqlite3")))
         , session("session-1", target.id(), "Observation", SessionStage::Capture, Timestamp{1s}, Timestamp{1s})
         , captureRun("run-1", session.id(), std::chrono::year{2026} / 10 / 25, settings)
@@ -207,7 +222,9 @@ struct CaptureFixture
     {
         database.open();
         sessions.create(target, session);
-        captureRun.start();
+        if (startRun) {
+            captureRun.start();
+        }
         runs.create(captureRun);
     }
 
@@ -483,6 +500,207 @@ private slots:
         QVERIFY_EXCEPTION_THROWN(
             service.applyRecoveryDecision("frame-unknown", CaptureRecoveryDecision::Retry),
             std::logic_error);
+    }
+
+    void finiteSequenceCompletesPlannedFramesAndReportsConfirmedProgress()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(
+            directory.path(),
+            CaptureSettings{FrameType::Light, 5s, 800, CaptureMode::Finite, 3},
+            false);
+        SimulatedCamera camera;
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
+        RecordingLoggingService logging;
+        CaptureFrameService frameService(
+            camera,
+            fixture.runs,
+            fixture.frames,
+            fixture.imageStorage,
+            logging,
+            fixture.target,
+            fixture.session,
+            fixture.captureRun);
+        CaptureSequenceService sequenceService(
+            frameService,
+            fixture.runs,
+            fixture.frames,
+            fixture.captureRun);
+
+        std::vector<CaptureSequenceProgress> progress;
+        const std::vector<Frame> frames = sequenceService.execute(
+            [&progress](const CaptureSequenceProgress& update) {
+                progress.push_back(update);
+            });
+
+        QCOMPARE(frames.size(), std::size_t{3});
+        QCOMPARE(fixture.captureRun.state(), CaptureRunState::Completed);
+        QCOMPARE(fixture.runs.findById("run-1")->state(), CaptureRunState::Completed);
+        QCOMPARE(fixture.frames.findByCaptureRunId("run-1").size(), std::size_t{3});
+        for (const Frame& frame : frames) {
+            QCOMPARE(frame.state(), FrameState::Completed);
+            QVERIFY(frame.filePath().has_value());
+            QVERIFY(frame.fileSize().has_value());
+        }
+
+        QVERIFY(!progress.empty());
+        QCOMPARE(progress.front().completedFrames, std::uint32_t{0});
+        QCOMPARE(progress.back().completedFrames, std::uint32_t{3});
+        for (std::size_t index = 1; index < progress.size(); ++index) {
+            QVERIFY(progress[index].completedFrames >= progress[index - 1].completedFrames);
+        }
+        QCOMPARE(
+            std::count_if(
+                progress.begin(),
+                progress.end(),
+                [](const CaptureSequenceProgress& update) {
+                    return update.currentFrame
+                        && update.currentFrame->state == FrameState::Completed;
+                }),
+            3);
+    }
+
+    void sequenceFailurePreservesCompletedFramesAndConfirmedProgress()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(
+            directory.path(),
+            CaptureSettings{FrameType::Light, 5s, 800, CaptureMode::Finite, 3});
+        TransferFailingCamera camera(2);
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
+        RecordingLoggingService logging;
+        CaptureFrameService frameService(
+            camera,
+            fixture.runs,
+            fixture.frames,
+            fixture.imageStorage,
+            logging,
+            fixture.target,
+            fixture.session,
+            fixture.captureRun);
+        CaptureSequenceService sequenceService(
+            frameService,
+            fixture.runs,
+            fixture.frames,
+            fixture.captureRun);
+
+        std::vector<CaptureSequenceProgress> progress;
+        QVERIFY_EXCEPTION_THROWN(
+            sequenceService.execute([&progress](const CaptureSequenceProgress& update) {
+                progress.push_back(update);
+            }),
+            CaptureFrameError);
+
+        const std::vector<Frame> persistedFrames =
+            fixture.frames.findByCaptureRunId("run-1");
+        QCOMPARE(persistedFrames.size(), std::size_t{2});
+        QCOMPARE(
+            std::count_if(
+                persistedFrames.begin(),
+                persistedFrames.end(),
+                [](const Frame& frame) {
+                    return frame.state() == FrameState::Completed;
+                }),
+            1);
+        QCOMPARE(
+            std::count_if(
+                persistedFrames.begin(),
+                persistedFrames.end(),
+                [](const Frame& frame) {
+                    return frame.state() == FrameState::Failed;
+                }),
+            1);
+        QCOMPARE(fixture.runs.findById("run-1")->state(), CaptureRunState::Paused);
+        QCOMPARE(fixture.captureRun.state(), CaptureRunState::Paused);
+        QVERIFY(!progress.empty());
+        QCOMPARE(progress.back().completedFrames, std::uint32_t{1});
+        for (const CaptureSequenceProgress& update : progress) {
+            QVERIFY(update.completedFrames <= 1);
+        }
+    }
+
+    void sequenceRetryUsesSameFrameAfterSafePreExposureFailure()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(
+            directory.path(),
+            CaptureSettings{FrameType::Light, 5s, 800, CaptureMode::Finite, 2});
+        ApplyFailOnceCamera camera;
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
+        RecordingLoggingService logging;
+        CaptureFrameService frameService(
+            camera,
+            fixture.runs,
+            fixture.frames,
+            fixture.imageStorage,
+            logging,
+            fixture.target,
+            fixture.session,
+            fixture.captureRun);
+        CaptureSequenceService sequenceService(
+            frameService,
+            fixture.runs,
+            fixture.frames,
+            fixture.captureRun);
+
+        std::optional<FrameId> failedFrameId;
+        try {
+            sequenceService.execute();
+        } catch (const CaptureFrameError& error) {
+            failedFrameId = error.frameId();
+            QVERIFY(std::find(
+                        error.recoveryOptions().begin(),
+                        error.recoveryOptions().end(),
+                        CaptureRecoveryDecision::Retry)
+                    != error.recoveryOptions().end());
+        }
+        QVERIFY(failedFrameId.has_value());
+        QCOMPARE(
+            fixture.frames.findById(*failedFrameId)->state(),
+            FrameState::Pending);
+
+        frameService.applyRecoveryDecision(
+            *failedFrameId,
+            CaptureRecoveryDecision::Retry);
+        const std::vector<Frame> completedFrames = sequenceService.execute();
+
+        QCOMPARE(completedFrames.size(), std::size_t{2});
+        QCOMPARE(
+            fixture.frames.findById(*failedFrameId)->state(),
+            FrameState::Completed);
+        QCOMPARE(fixture.runs.findById("run-1")->state(), CaptureRunState::Completed);
+    }
+
+    void continuousRunIsRejectedByFiniteSequenceService()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(
+            directory.path(),
+            CaptureSettings{FrameType::Light, 5s, 800, CaptureMode::Continuous, std::nullopt});
+        SimulatedCamera camera;
+        RecordingLoggingService logging;
+        CaptureFrameService frameService(
+            camera,
+            fixture.runs,
+            fixture.frames,
+            fixture.imageStorage,
+            logging,
+            fixture.target,
+            fixture.session,
+            fixture.captureRun);
+        CaptureSequenceService sequenceService(
+            frameService,
+            fixture.runs,
+            fixture.frames,
+            fixture.captureRun);
+
+        QVERIFY_EXCEPTION_THROWN(sequenceService.execute(), std::invalid_argument);
+        QCOMPARE(fixture.captureRun.state(), CaptureRunState::Running);
+        QVERIFY(fixture.frames.findByCaptureRunId("run-1").empty());
     }
 };
 
