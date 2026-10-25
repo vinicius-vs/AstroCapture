@@ -1,13 +1,17 @@
 #include "main_window.h"
 
+#include "application/capture_configuration_service.h"
 #include "application/session_service.h"
 #include "app/application_metadata.h"
 
 #include <QComboBox>
 #include <QColor>
 #include <QAbstractItemView>
+#include <QBoxLayout>
+#include <QGridLayout>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFrame>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -23,7 +27,10 @@
 #include <QPalette>
 #include <QPushButton>
 #include <QRadialGradient>
+#include <QResizeEvent>
 #include <QScrollArea>
+#include <QStandardItemModel>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QToolButton>
@@ -32,7 +39,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <exception>
+#include <functional>
+#include <optional>
 #include <tuple>
 #include <vector>
 
@@ -210,6 +221,62 @@ protected:
     }
 };
 
+class ResizeAwareWidget final : public QWidget
+{
+public:
+    using ResizeHandler = std::function<void(int)>;
+
+    explicit ResizeAwareWidget(QWidget* parent = nullptr)
+        : QWidget(parent)
+    {
+    }
+
+    void setResizeHandler(ResizeHandler handler)
+    {
+        resizeHandler_ = std::move(handler);
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QWidget::resizeEvent(event);
+        if (resizeHandler_) {
+            resizeHandler_(event->size().width());
+        }
+    }
+
+private:
+    ResizeHandler resizeHandler_;
+};
+
+class ResponsiveHomeScrollArea final : public QScrollArea
+{
+public:
+    using ResizeHandler = std::function<void(int)>;
+
+    explicit ResponsiveHomeScrollArea(QWidget* parent = nullptr)
+        : QScrollArea(parent)
+    {
+    }
+
+    void setResizeHandler(ResizeHandler handler)
+    {
+        resizeHandler_ = std::move(handler);
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QScrollArea::resizeEvent(event);
+        if (resizeHandler_) {
+            resizeHandler_(viewport()->width());
+        }
+    }
+
+private:
+    ResizeHandler resizeHandler_;
+};
+
 class DarkComboBox final : public QComboBox
 {
 public:
@@ -257,14 +324,18 @@ public:
 
 } // namespace
 
-MainWindow::MainWindow(application::SessionService& sessionService, QWidget* parent)
+MainWindow::MainWindow(
+    application::SessionService& sessionService,
+    application::CaptureConfigurationService& captureConfigurationService,
+    QWidget* parent)
     : QMainWindow(parent)
     , sessionService_(sessionService)
+    , captureConfigurationService_(captureConfigurationService)
 {
     setWindowTitle(applicationTitle());
     resize(1440, 900);
 
-    auto* shell = new QWidget(this);
+    auto* shell = new ResizeAwareWidget(this);
     shell->setObjectName(QStringLiteral("applicationShell"));
     shell->setStyleSheet(QString::fromLatin1(DashboardStyle));
 
@@ -279,14 +350,16 @@ MainWindow::MainWindow(application::SessionService& sessionService, QWidget* par
     sidebarLayout->setContentsMargins(15, 22, 15, 14);
     sidebarLayout->setSpacing(8);
 
-    sidebarLayout->addWidget(makeTextLabel(
+    auto* brandMark = makeTextLabel(
         QStringLiteral("◉ AstroCapture"),
         QStringLiteral("brandMark"),
-        sidebar));
-    sidebarLayout->addWidget(makeTextLabel(
+        sidebar);
+    auto* brandTagline = makeTextLabel(
         QStringLiteral("Capture o universo"),
         QStringLiteral("brandTagline"),
-        sidebar));
+        sidebar);
+    sidebarLayout->addWidget(brandMark);
+    sidebarLayout->addWidget(brandTagline);
     sidebarLayout->addSpacing(20);
 
     homeNavigationButton_ = new QPushButton(QStringLiteral("⌂   Início"), sidebar);
@@ -310,6 +383,17 @@ MainWindow::MainWindow(application::SessionService& sessionService, QWidget* par
     settingsButton->setObjectName(QStringLiteral("settingsNavigationButton"));
     settingsButton->setProperty("navigation", true);
     settingsButton->setStyleSheet(libraryNavigationButton_->styleSheet());
+    const std::vector<std::pair<QPushButton*, QString>> navigationButtons{
+        {homeNavigationButton_, QStringLiteral("⌂")},
+        {libraryNavigationButton_, QStringLiteral("▧")},
+        {sequencesButton, QStringLiteral("▱")},
+        {settingsButton, QStringLiteral("⚙")}};
+    for (const auto& [button, icon] : navigationButtons) {
+        button->setProperty("fullText", button->text());
+        button->setProperty("compactText", icon);
+        button->setToolTip(button->text());
+        button->setAccessibleName(button->text());
+    }
     sidebarLayout->addWidget(homeNavigationButton_);
     sidebarLayout->addWidget(libraryNavigationButton_);
     sidebarLayout->addWidget(sequencesButton);
@@ -320,13 +404,15 @@ MainWindow::MainWindow(application::SessionService& sessionService, QWidget* par
     auto* readyIndicator = makeTextLabel(QStringLiteral("●"), {}, sidebar);
     readyIndicator->setStyleSheet(QStringLiteral("color:#40e0b1;"));
     readyLayout->addWidget(readyIndicator);
-    readyLayout->addWidget(makeTextLabel(QStringLiteral("Aplicativo pronto"), {}, sidebar));
+    auto* readyStatusText = makeTextLabel(QStringLiteral("Aplicativo pronto"), {}, sidebar);
+    readyLayout->addWidget(readyStatusText);
     readyLayout->addStretch();
     sidebarLayout->addLayout(readyLayout);
-    sidebarLayout->addWidget(makeTextLabel(
+    auto* sidebarStatusDetail = makeTextLabel(
         QStringLiteral("A câmera será conectada no fluxo de captura."),
         QStringLiteral("sidebarStatusDetail"),
-        sidebar));
+        sidebar);
+    sidebarLayout->addWidget(sidebarStatusDetail);
 
     pages_ = new QStackedWidget(shell);
     pages_->setObjectName(QStringLiteral("mainPages"));
@@ -344,11 +430,39 @@ MainWindow::MainWindow(application::SessionService& sessionService, QWidget* par
     connect(libraryNavigationButton_, &QPushButton::clicked, this, [this] { showSessionsPage(); });
     sequencesButton->setEnabled(false);
     settingsButton->setEnabled(false);
+
+    shell->setResizeHandler([sidebar, sidebarLayout, brandMark, brandTagline,
+                             readyStatusText, sidebarStatusDetail, navigationButtons](int width) {
+        const bool compact = width < 1000;
+        const bool narrow = width < 520;
+        sidebar->setFixedWidth(narrow ? 56 : compact ? 72 : 225);
+        sidebarLayout->setContentsMargins(
+            narrow ? 5 : compact ? 8 : 15,
+            compact ? 12 : 22,
+            narrow ? 5 : compact ? 8 : 15,
+            14);
+        brandMark->setText(compact ? QStringLiteral("◉") : QStringLiteral("◉ AstroCapture"));
+        brandTagline->setVisible(!compact);
+        readyStatusText->setVisible(!compact);
+        sidebarStatusDetail->setVisible(!compact);
+        for (const auto& [button, icon] : navigationButtons) {
+            button->setText(compact ? icon : button->property("fullText").toString());
+            button->setStyleSheet(compact
+                    ? QStringLiteral("QPushButton { text-align:center; border:0; border-radius:7px; "
+                                     "padding:11px 2px; background:transparent; color:#b5c5d0; }"
+                                     "QPushButton[active=\"true\"] { background:#0c2928; color:#42e4b3; }"
+                                     "QPushButton:hover { background:#0c2928; color:#42e4b3; }")
+                    : QStringLiteral("QPushButton { text-align:left; border:0; border-radius:7px; "
+                                     "padding:11px 14px; background:transparent; color:#b5c5d0; }"
+                                     "QPushButton[active=\"true\"] { background:#0c2928; color:#42e4b3; }"
+                                     "QPushButton:hover { background:#0c2928; color:#42e4b3; }"));
+        }
+    });
 }
 
 QWidget* MainWindow::createHomePage()
 {
-    auto* scroll = new QScrollArea(this);
+    auto* scroll = new ResponsiveHomeScrollArea(this);
     scroll->setObjectName(QStringLiteral("homePage"));
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
@@ -361,11 +475,13 @@ QWidget* MainWindow::createHomePage()
     scroll->viewport()->setAutoFillBackground(true);
 
     auto* page = new QWidget(scroll);
+    page->setObjectName(QStringLiteral("homeContent"));
     page->setAutoFillBackground(true);
     QPalette pagePalette = page->palette();
     pagePalette.setColor(QPalette::Window, QColor(QStringLiteral("#050d13")));
     page->setPalette(pagePalette);
-    auto* pageLayout = new QHBoxLayout(page);
+    auto* pageLayout = new QBoxLayout(QBoxLayout::LeftToRight, page);
+    pageLayout->setObjectName(QStringLiteral("homeContentLayout"));
     pageLayout->setContentsMargins(8, 8, 8, 8);
     pageLayout->setSpacing(16);
 
@@ -380,6 +496,8 @@ QWidget* MainWindow::createHomePage()
         QStringLiteral("Bem-vindo ao\nAstroCapture"),
         QStringLiteral("welcomeTitle"),
         banner);
+    welcomeTitle->setWordWrap(true);
+    welcomeTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     welcomeTitle->setStyleSheet(
         QStringLiteral("font-size:25pt; font-weight:700; color:#f1f6fa;"));
     bannerLayout->addWidget(welcomeTitle);
@@ -387,6 +505,8 @@ QWidget* MainWindow::createHomePage()
         QStringLiteral("Registre o céu, explore o universo."),
         QStringLiteral("welcomeSubtitle"),
         banner);
+    welcomeSubtitle->setWordWrap(true);
+    welcomeSubtitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     welcomeSubtitle->setStyleSheet(
         QStringLiteral("font-size:12pt; font-weight:600; color:#e6edf3;"));
     bannerLayout->addWidget(welcomeSubtitle);
@@ -395,14 +515,18 @@ QWidget* MainWindow::createHomePage()
         QStringLiteral("welcomeDetail"),
         banner);
     welcomeDetail->setWordWrap(true);
+    welcomeDetail->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     welcomeDetail->setMaximumWidth(440);
     welcomeDetail->setStyleSheet(QStringLiteral("color:#a9bdca;"));
     bannerLayout->addWidget(welcomeDetail);
     bannerLayout->addStretch();
     mainColumn->addWidget(banner);
 
-    auto* actionLayout = new QHBoxLayout;
-    actionLayout->setSpacing(12);
+    auto* actionLayout = new QGridLayout;
+    actionLayout->setObjectName(QStringLiteral("homeActionGrid"));
+    actionLayout->setHorizontalSpacing(12);
+    actionLayout->setVerticalSpacing(12);
+    std::vector<QWidget*> actionCards;
     const std::vector<std::tuple<QString, QString, QString, QString>> actions{
         {QStringLiteral("Iniciar sessão"), QStringLiteral("◎"),
          QStringLiteral("Crie ou abra uma sessão para preparar sua captura."),
@@ -456,11 +580,12 @@ QWidget* MainWindow::createHomePage()
         cardLayout->addWidget(actionDetail);
         cardLayout->addStretch();
         cardLayout->addWidget(actionButton);
-        actionLayout->addWidget(card, 1);
+        actionCards.push_back(card);
+        actionLayout->addWidget(card, 0, static_cast<int>(index));
     }
     mainColumn->addLayout(actionLayout);
 
-    auto* recentHeader = new QHBoxLayout;
+    auto* recentHeader = new QBoxLayout(QBoxLayout::LeftToRight);
     recentHeader->addWidget(makeTextLabel(
         QStringLiteral("Sessões recentes"),
         QStringLiteral("sectionTitle"),
@@ -474,8 +599,11 @@ QWidget* MainWindow::createHomePage()
     recentHeader->addWidget(viewSessionsButton);
     mainColumn->addLayout(recentHeader);
 
-    auto* recentLayout = new QHBoxLayout;
-    recentLayout->setSpacing(10);
+    auto* recentLayout = new QGridLayout;
+    recentLayout->setObjectName(QStringLiteral("recentSessionsGrid"));
+    recentLayout->setHorizontalSpacing(10);
+    recentLayout->setVerticalSpacing(10);
+    std::vector<QWidget*> recentCards;
     const auto sessions = sessionService_.listSessions();
     if (sessions.empty()) {
         auto* emptyCard = makeCard(QStringLiteral("recentCard"), page);
@@ -489,7 +617,8 @@ QWidget* MainWindow::createHomePage()
             QStringLiteral("Inicie uma captura para criar sua primeira sessão."),
             QStringLiteral("mutedText"),
             emptyCard));
-        recentLayout->addWidget(emptyCard, 1);
+        recentCards.push_back(emptyCard);
+        recentLayout->addWidget(emptyCard, 0, 0);
     } else {
         const auto visibleCount = qMin<std::size_t>(sessions.size(), 4);
         for (std::size_t index = 0; index < visibleCount; ++index) {
@@ -507,7 +636,8 @@ QWidget* MainWindow::createHomePage()
                          record.isOpen ? QStringLiteral("Aberta") : QStringLiteral("Fechada")),
                 QStringLiteral("mutedText"),
                 card));
-            recentLayout->addWidget(card, 1);
+            recentCards.push_back(card);
+            recentLayout->addWidget(card, 0, static_cast<int>(index));
         }
     }
     mainColumn->addLayout(recentLayout);
@@ -605,6 +735,19 @@ QWidget* MainWindow::createHomePage()
     tipLayout->addWidget(tip);
     rightColumn->addWidget(tipCard);
     rightColumn->addStretch();
+    for (int index = 0; index < rightColumn->count(); ++index) {
+        QWidget* card = rightColumn->itemAt(index)->widget();
+        if (card) {
+            for (QLabel* label : card->findChildren<QLabel*>()) {
+                label->setWordWrap(true);
+            }
+        }
+    }
+    for (QWidget* card : recentCards) {
+        for (QLabel* label : card->findChildren<QLabel*>()) {
+            label->setWordWrap(true);
+        }
+    }
 
     pageLayout->addLayout(mainColumn, 1);
     pageLayout->addLayout(rightColumn);
@@ -614,6 +757,46 @@ QWidget* MainWindow::createHomePage()
     rightColumn->setStretch(3, 0);
     pageLayout->setStretch(0, 1);
     pageLayout->setStretch(1, 0);
+
+    const auto updateLayout = [pageLayout, bannerLayout, recentHeader, actionLayout,
+                               actionCards, recentLayout, recentCards](int width) {
+        const int cardColumns = width >= 1050 ? 4 : width >= 520 ? 2 : 1;
+        const auto arrangeCards = [cardColumns](QGridLayout* layout, const std::vector<QWidget*>& cards) {
+            for (QWidget* card : cards) {
+                layout->removeWidget(card);
+            }
+            for (int column = 0; column < 4; ++column) {
+                layout->setColumnStretch(column, column < cardColumns ? 1 : 0);
+            }
+            for (std::size_t index = 0; index < cards.size(); ++index) {
+                layout->addWidget(
+                    cards[index],
+                    static_cast<int>(index) / cardColumns,
+                    static_cast<int>(index) % cardColumns);
+            }
+        };
+
+        const bool stackedColumns = width < 950;
+        pageLayout->setDirection(stackedColumns
+                ? QBoxLayout::TopToBottom
+                : QBoxLayout::LeftToRight);
+        const int margin = width < 400 ? 2 : width < 520 ? 4 : 8;
+        pageLayout->setContentsMargins(margin, margin, margin, margin);
+        pageLayout->setSpacing(width < 520 ? 8 : 16);
+        recentHeader->setDirection(width < 400
+                ? QBoxLayout::TopToBottom
+                : QBoxLayout::LeftToRight);
+        const int bannerHorizontalMargin = width < 520 ? 12 : 34;
+        bannerLayout->setContentsMargins(
+            bannerHorizontalMargin,
+            width < 520 ? 18 : 26,
+            bannerHorizontalMargin,
+            width < 520 ? 18 : 26);
+        arrangeCards(actionLayout, actionCards);
+        arrangeCards(recentLayout, recentCards);
+    };
+    scroll->setResizeHandler(updateLayout);
+    updateLayout(scroll->viewport()->width());
 
     scroll->setWidget(page);
     return scroll;
@@ -635,10 +818,12 @@ QWidget* MainWindow::createSessionsPage()
         QStringLiteral("Sessões de captura"),
         QStringLiteral("sectionTitle"),
         page));
-    layout->addWidget(makeTextLabel(
+    auto* sessionsDescription = makeTextLabel(
         QStringLiteral("Selecione uma sessão existente para continuar."),
         QStringLiteral("mutedText"),
-        page));
+        page);
+    sessionsDescription->setWordWrap(true);
+    layout->addWidget(sessionsDescription);
 
     layout->addWidget(makeTextLabel(
         QStringLiteral("Sessões existentes"),
@@ -647,6 +832,8 @@ QWidget* MainWindow::createSessionsPage()
     sessionList_ = new QListWidget(page);
     sessionList_->setObjectName(QStringLiteral("sessionList"));
     sessionList_->setSpacing(5);
+    sessionList_->setMinimumWidth(0);
+    sessionList_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     layout->addWidget(sessionList_, 1);
     auto* footer = new QHBoxLayout;
     activeSessionLabel_ = new QLabel(QStringLiteral("Nenhuma sessão aberta"), page);
@@ -749,8 +936,242 @@ void MainWindow::openSessionConfigurationDialog()
     });
 
     if (dialog.exec() == QDialog::Accepted) {
-        showHomePage();
+        showCaptureConfigurationPage(activeSessionId_, true);
     }
+}
+
+void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool returnHome)
+{
+    domain::CameraCapabilities capabilities;
+    domain::CameraSettings currentSettings;
+    try {
+        capabilities = captureConfigurationService_.cameraCapabilities();
+        currentSettings = captureConfigurationService_.currentCameraSettings();
+    } catch (const std::exception& error) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("Câmera indisponível"),
+            QString::fromUtf8(error.what()));
+        return;
+    }
+
+    if (captureConfigurationPage_) {
+        pages_->removeWidget(captureConfigurationPage_);
+        delete captureConfigurationPage_;
+        captureConfigurationPage_ = nullptr;
+    }
+
+    auto* scroll = new QScrollArea(this);
+    scroll->setObjectName(QStringLiteral("captureConfigurationPage"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setStyleSheet(QStringLiteral(
+        "QScrollArea#captureConfigurationPage { background:#050d13; border:0; }"));
+    auto* page = new QWidget(scroll);
+    page->setObjectName(QStringLiteral("captureConfigurationContent"));
+    page->setMinimumWidth(0);
+    page->setAutoFillBackground(true);
+    page->setStyleSheet(QStringLiteral(
+        "QLabel { color:#e5edf3; }"
+        "QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background:#071119; color:#e5edf3; "
+        "border:1px solid #263943; border-radius:5px; padding:7px; }"
+        "QComboBox QAbstractItemView { background:#071119; color:#e5edf3; "
+        "selection-background-color:#0c2928; selection-color:#49e3b6; border:0; outline:0; }"
+        "QPushButton { background:#0d302d; color:#49e3b6; "
+        "border:1px solid #21c99b; border-radius:6px; padding:8px 12px; }"));
+    QPalette pagePalette = page->palette();
+    pagePalette.setColor(QPalette::Window, QColor(QStringLiteral("#050d13")));
+    page->setPalette(pagePalette);
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(18, 18, 18, 18);
+    layout->setSpacing(14);
+    layout->addWidget(makeTextLabel(
+        QStringLiteral("Defina a câmera e os parâmetros da sequência."),
+        QStringLiteral("captureConfigurationDescription"),
+        page));
+
+    auto* cameraInput = new QComboBox(page);
+    cameraInput->setObjectName(QStringLiteral("captureCameraInput"));
+    cameraInput->addItem(QStringLiteral("Simulada"), QStringLiteral("simulated"));
+    cameraInput->addItem(QStringLiteral("Câmera física (indisponível)"), QStringLiteral("physical"));
+    if (auto* model = qobject_cast<QStandardItemModel*>(cameraInput->model())) {
+        if (QStandardItem* physicalItem = model->item(1)) {
+            physicalItem->setFlags(physicalItem->flags() & ~Qt::ItemIsEnabled);
+        }
+    }
+
+    auto* cameraStatus = makeTextLabel(
+        QStringLiteral("Simulador conectado · Exposição: %1–%2 s · ISO: %3")
+            .arg(
+                QString::number(
+                    static_cast<double>(capabilities.exposure.minimum.value_or(
+                        std::chrono::microseconds::zero()).count()) / 1'000'000.0,
+                    'f',
+                    3),
+                QString::number(
+                    static_cast<double>(capabilities.exposure.maximum.value_or(
+                        std::chrono::microseconds::zero()).count()) / 1'000'000.0,
+                    'f',
+                    0),
+                capabilities.iso.state == domain::CapabilityState::Unavailable
+                    ? QStringLiteral("indisponível")
+                    : QStringLiteral("suportado")),
+        QStringLiteral("captureCameraCapabilities"),
+                page);
+    cameraStatus->setWordWrap(true);
+
+    auto* frameTypeInput = new QComboBox(page);
+    frameTypeInput->setObjectName(QStringLiteral("frameTypeInput"));
+    frameTypeInput->addItem(QStringLiteral("Light"), static_cast<int>(domain::FrameType::Light));
+    frameTypeInput->addItem(QStringLiteral("Dark"), static_cast<int>(domain::FrameType::Dark));
+    frameTypeInput->addItem(QStringLiteral("Flat"), static_cast<int>(domain::FrameType::Flat));
+    frameTypeInput->addItem(QStringLiteral("Bias"), static_cast<int>(domain::FrameType::Bias));
+    frameTypeInput->addItem(QStringLiteral("Dark Flat"), static_cast<int>(domain::FrameType::DarkFlat));
+
+    auto* modeInput = new QComboBox(page);
+    modeInput->setObjectName(QStringLiteral("captureModeInput"));
+    modeInput->addItem(QStringLiteral("Quantidade definida"), static_cast<int>(domain::CaptureMode::Finite));
+    modeInput->addItem(QStringLiteral("Contínua"), static_cast<int>(domain::CaptureMode::Continuous));
+
+    auto* exposureInput = new QDoubleSpinBox(page);
+    exposureInput->setObjectName(QStringLiteral("exposureInput"));
+    exposureInput->setDecimals(3);
+    exposureInput->setSingleStep(0.1);
+    exposureInput->setSuffix(QStringLiteral(" s"));
+    const bool exposureAvailable =
+        capabilities.exposure.state != domain::CapabilityState::Unavailable;
+    exposureInput->setEnabled(exposureAvailable);
+    if (exposureAvailable) {
+        const double minimum = static_cast<double>(
+            capabilities.exposure.minimum.value_or(std::chrono::microseconds{1000}).count())
+            / 1'000'000.0;
+        const double maximum = static_cast<double>(
+            capabilities.exposure.maximum.value_or(std::chrono::minutes{30}).count())
+            / 1'000'000.0;
+        exposureInput->setRange(minimum, maximum);
+        exposureInput->setValue(currentSettings.exposure
+                ? static_cast<double>(currentSettings.exposure->count()) / 1'000'000.0
+                : minimum);
+    } else {
+        exposureInput->setRange(0.0, 0.0);
+    }
+    if (capabilities.exposure.state == domain::CapabilityState::ReadOnly) {
+        exposureInput->setReadOnly(true);
+    }
+
+    auto* isoInput = new QComboBox(page);
+    isoInput->setObjectName(QStringLiteral("isoInput"));
+    const bool isoAvailable = capabilities.iso.state != domain::CapabilityState::Unavailable;
+    if (isoAvailable) {
+        if (capabilities.iso.state == domain::CapabilityState::Supported) {
+            isoInput->addItem(QStringLiteral("Não informar"), QVariant{});
+            for (const unsigned int iso : capabilities.iso.values) {
+                isoInput->addItem(QString::number(iso), iso);
+            }
+        } else if (currentSettings.iso) {
+            isoInput->addItem(QString::number(*currentSettings.iso), *currentSettings.iso);
+            isoInput->setEnabled(false);
+        } else {
+            isoInput->addItem(QStringLiteral("ISO indisponível"));
+            isoInput->setEnabled(false);
+        }
+
+        if (currentSettings.iso) {
+            const int currentIndex = isoInput->findData(*currentSettings.iso);
+            if (currentIndex >= 0) {
+                isoInput->setCurrentIndex(currentIndex);
+            }
+        }
+    } else {
+        isoInput->addItem(QStringLiteral("Não suportado"));
+        isoInput->setEnabled(false);
+    }
+
+    auto* countInput = new QSpinBox(page);
+    countInput->setObjectName(QStringLiteral("frameCountInput"));
+    countInput->setRange(1, 10000);
+    countInput->setValue(1);
+    connect(modeInput, &QComboBox::currentIndexChanged, page, [modeInput, countInput] {
+        const auto mode = static_cast<domain::CaptureMode>(modeInput->currentData().toInt());
+        countInput->setEnabled(mode == domain::CaptureMode::Finite);
+    });
+
+    auto* form = new QFormLayout;
+    form->setRowWrapPolicy(QFormLayout::WrapAllRows);
+    form->addRow(QStringLiteral("Câmera"), cameraInput);
+    form->addRow(QString{}, cameraStatus);
+    form->addRow(QStringLiteral("Tipo de quadro"), frameTypeInput);
+    form->addRow(QStringLiteral("Modo"), modeInput);
+    form->addRow(QStringLiteral("Exposição"), exposureInput);
+    form->addRow(QStringLiteral("ISO"), isoInput);
+    form->addRow(QStringLiteral("Quantidade"), countInput);
+    layout->addLayout(form);
+
+    auto* errorLabel = makeTextLabel({}, QStringLiteral("captureValidationError"), page);
+    errorLabel->setWordWrap(true);
+    errorLabel->setStyleSheet(QStringLiteral("color:#ff8e8e;"));
+    layout->addWidget(errorLabel);
+
+    auto* statusLabel = makeTextLabel({}, QStringLiteral("captureConfigurationStatus"), page);
+    statusLabel->setWordWrap(true);
+    statusLabel->setStyleSheet(QStringLiteral("color:#49e3b6;"));
+    layout->addWidget(statusLabel);
+
+    auto* buttons = new QDialogButtonBox(page);
+    auto* startButton = buttons->addButton(
+        QStringLiteral("Preparar sequência"),
+        QDialogButtonBox::AcceptRole);
+    startButton->setObjectName(QStringLiteral("prepareCaptureButton"));
+    startButton->setEnabled(exposureAvailable);
+    auto* backButton = buttons->addButton(QDialogButtonBox::Cancel);
+    backButton->setText(QStringLiteral("Voltar"));
+    backButton->setObjectName(QStringLiteral("captureBackButton"));
+    connect(backButton, &QPushButton::clicked, this, [this, returnHome] {
+        if (returnHome) {
+            showHomePage();
+        } else {
+            showSessionsPage();
+        }
+    });
+    connect(startButton, &QPushButton::clicked, page, [this, sessionId, statusLabel,
+                       frameTypeInput, modeInput, exposureInput, isoInput, countInput, errorLabel] {
+        errorLabel->clear();
+        statusLabel->clear();
+        try {
+            const auto frameType = static_cast<domain::FrameType>(frameTypeInput->currentData().toInt());
+            const auto mode = static_cast<domain::CaptureMode>(modeInput->currentData().toInt());
+            const auto exposure = std::chrono::microseconds{
+                static_cast<std::int64_t>(std::llround(exposureInput->value() * 1'000'000.0))};
+            const std::optional<unsigned int> iso = isoInput->isEnabled()
+                    && isoInput->currentData().isValid()
+                ? std::optional<unsigned int>{isoInput->currentData().toUInt()}
+                : std::nullopt;
+            const std::optional<std::uint32_t> plannedCount =
+                mode == domain::CaptureMode::Finite
+                ? std::optional<std::uint32_t>{static_cast<std::uint32_t>(countInput->value())}
+                : std::nullopt;
+            const domain::CaptureSettings settings{
+                frameType,
+                exposure,
+                iso,
+                mode,
+                plannedCount};
+            const auto captureRun = captureConfigurationService_.configureSequence(sessionId, settings);
+            errorLabel->clear();
+            statusLabel->setText(
+                QStringLiteral("Sequência válida criada (%1). A execução será feita pelo motor de captura.")
+                    .arg(QString::fromStdString(captureRun.id())));
+        } catch (const std::exception& error) {
+            errorLabel->setText(QString::fromUtf8(error.what()));
+        }
+    });
+    layout->addWidget(buttons);
+    scroll->setWidget(page);
+    captureConfigurationPage_ = scroll;
+    setNavigationSelection(returnHome);
+    pages_->addWidget(scroll);
+    pages_->setCurrentWidget(scroll);
 }
 
 void MainWindow::openSession(const std::string& sessionId)
@@ -762,6 +1183,7 @@ void MainWindow::openSession(const std::string& sessionId)
             QStringLiteral("Sessão aberta: %1 (%2)")
                 .arg(QString::fromStdString(record.session.name()), stageName(record.session.stage())));
         refreshSessions();
+        showCaptureConfigurationPage(sessionId, false);
     } catch (const std::exception& error) {
         QMessageBox::warning(
             this,

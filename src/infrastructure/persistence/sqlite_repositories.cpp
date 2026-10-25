@@ -808,6 +808,102 @@ void SqliteCaptureRunRepository::create(const CaptureRun& captureRun)
     execute(database_, query, QStringLiteral("Creating capture run failed"));
 }
 
+void SqliteCaptureRunRepository::createWithFrames(
+    const CaptureRun& captureRun,
+    const std::vector<Frame>& frames)
+{
+    if (captureRun.settings().mode == CaptureMode::Finite
+        && frames.size() != *captureRun.settings().plannedFrameCount) {
+        throw std::invalid_argument("Finite capture run must have its planned number of pending frames");
+    }
+    if (captureRun.settings().mode == CaptureMode::Continuous && !frames.empty()) {
+        throw std::invalid_argument("Continuous capture run cannot have pre-created frames");
+    }
+    for (const Frame& frame : frames) {
+        if (frame.captureRunId() != captureRun.id()
+            || frame.type() != captureRun.settings().frameType
+            || frame.exposure() != captureRun.settings().exposure
+            || frame.iso() != captureRun.settings().iso
+            || frame.state() != FrameState::Pending
+            || !frame.exposure()) {
+            throw std::invalid_argument("Capture run and pending frames must have matching settings");
+        }
+    }
+
+    QSqlDatabase connection = database_.connection();
+    beginTransaction(connection);
+    try {
+        QSqlQuery runQuery(connection);
+        if (!runQuery.prepare(QStringLiteral(
+                "INSERT INTO capture_runs "
+                "(id, session_id, acquisition_date, frame_type, exposure_microseconds, "
+                "iso, mode, planned_frame_count, state) "
+                "VALUES (:id, :session_id, :acquisition_date, :frame_type, :exposure, "
+                ":iso, :mode, :planned_frame_count, :state)"))) {
+            throwQueryError(runQuery, QStringLiteral("Preparing capture run insert failed"));
+        }
+        runQuery.bindValue(QStringLiteral(":id"), text(captureRun.id()));
+        runQuery.bindValue(QStringLiteral(":session_id"), text(captureRun.sessionId()));
+        runQuery.bindValue(
+            QStringLiteral(":acquisition_date"),
+            acquisitionDateToString(captureRun.acquisitionDate()));
+        runQuery.bindValue(
+            QStringLiteral(":frame_type"),
+            frameTypeName(captureRun.settings().frameType));
+        runQuery.bindValue(
+            QStringLiteral(":exposure"),
+            static_cast<qlonglong>(captureRun.settings().exposure.count()));
+        if (captureRun.settings().iso) {
+            runQuery.bindValue(QStringLiteral(":iso"), *captureRun.settings().iso);
+        } else {
+            runQuery.bindValue(QStringLiteral(":iso"), QVariant{});
+        }
+        runQuery.bindValue(QStringLiteral(":mode"), captureModeName(captureRun.settings().mode));
+        if (captureRun.settings().plannedFrameCount) {
+            runQuery.bindValue(
+                QStringLiteral(":planned_frame_count"),
+                *captureRun.settings().plannedFrameCount);
+        } else {
+            runQuery.bindValue(QStringLiteral(":planned_frame_count"), QVariant{});
+        }
+        runQuery.bindValue(QStringLiteral(":state"), captureRunStateName(captureRun.state()));
+        execute(database_, runQuery, QStringLiteral("Creating capture run failed"));
+
+        QSqlQuery frameQuery(connection);
+        if (!frameQuery.prepare(QStringLiteral(
+                "INSERT INTO frames "
+                "(id, capture_run_id, type, state, exposure_microseconds, iso, captured_at, "
+                "file_path, file_size, error_message) "
+                "VALUES (:id, :capture_run_id, :type, :state, :exposure, :iso, NULL, NULL, NULL, NULL)"))) {
+            throwQueryError(frameQuery, QStringLiteral("Preparing frame insert failed"));
+        }
+        for (const Frame& frame : frames) {
+            frameQuery.bindValue(QStringLiteral(":id"), text(frame.id()));
+            frameQuery.bindValue(QStringLiteral(":capture_run_id"), text(frame.captureRunId()));
+            frameQuery.bindValue(QStringLiteral(":type"), frameTypeName(frame.type()));
+            frameQuery.bindValue(QStringLiteral(":state"), frameStateName(frame.state()));
+            frameQuery.bindValue(
+                QStringLiteral(":exposure"),
+                static_cast<qlonglong>(frame.exposure()->count()));
+            if (frame.iso()) {
+                frameQuery.bindValue(QStringLiteral(":iso"), *frame.iso());
+            } else {
+                frameQuery.bindValue(QStringLiteral(":iso"), QVariant{});
+            }
+            execute(database_, frameQuery, QStringLiteral("Creating frame failed"));
+        }
+        commitTransaction(connection);
+    } catch (const std::exception& error) {
+        const std::string operationError = error.what();
+        try {
+            rollbackTransaction(connection);
+        } catch (const std::exception& rollbackError) {
+            throw RepositoryError(operationError + "; " + rollbackError.what());
+        }
+        throw;
+    }
+}
+
 std::optional<CaptureRun> SqliteCaptureRunRepository::findById(const CaptureRunId& id) const
 {
     return findCaptureRunById(database_, id);

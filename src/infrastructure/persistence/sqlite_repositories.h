@@ -35,6 +35,9 @@ public:
     explicit SqliteCaptureRunRepository(SqliteDatabase& database);
 
     void create(const domain::CaptureRun& captureRun) override;
+    void createWithFrames(
+        const domain::CaptureRun& captureRun,
+        const std::vector<domain::Frame>& frames) override;
     std::optional<domain::CaptureRun> findById(const domain::CaptureRunId& id) const override;
     std::vector<domain::CaptureRun> findBySessionId(const domain::SessionId& sessionId) const override;
     void updateState(const domain::CaptureRunId& id, domain::CaptureRunState desiredState) override;

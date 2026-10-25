@@ -12,6 +12,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace std::chrono_literals;
 using namespace domain;
@@ -165,6 +166,47 @@ private slots:
             std::invalid_argument);
         QCOMPARE(repository.findById(session.id())->session.stage(), SessionStage::Capture);
         QCOMPARE(repository.findById(session.id())->session.updatedAt(), createdAt);
+    }
+
+    void createsCaptureRunAndFramesAtomically()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        SqliteDatabase database(
+            QDir(directory.path()).filePath(QStringLiteral("repository.sqlite3")));
+        database.open();
+        SqliteSessionRepository sessions(database);
+        const Target target("target-1", "M42");
+        const Session session = makeSession(target, "session-1");
+        sessions.create(target, session);
+        SqliteCaptureRunRepository runs(database);
+        SqliteFrameRepository frames(database);
+        const CaptureRun run(
+            "run-1",
+            session.id(),
+            std::chrono::year{2026} / 10 / 24,
+            CaptureSettings{
+                FrameType::Light,
+                5s,
+                800,
+                CaptureMode::Finite,
+                2});
+
+        const std::vector<Frame> duplicateFrames{
+            Frame("frame-1", run.id(), FrameType::Light, 5s, 800),
+            Frame("frame-1", run.id(), FrameType::Light, 5s, 800)};
+        QVERIFY_EXCEPTION_THROWN(
+            runs.createWithFrames(run, duplicateFrames),
+            RepositoryError);
+        QVERIFY(!runs.findById(run.id()).has_value());
+        QVERIFY(frames.findByCaptureRunId(run.id()).empty());
+
+        const std::vector<Frame> validFrames{
+            Frame("frame-1", run.id(), FrameType::Light, 5s, 800),
+            Frame("frame-2", run.id(), FrameType::Light, 5s, 800)};
+        runs.createWithFrames(run, validFrames);
+        QVERIFY(runs.findById(run.id()).has_value());
+        QCOMPARE(frames.findByCaptureRunId(run.id()).size(), std::size_t{2});
     }
 
     void persistsCaptureRunsAndValidatesStateTransitions()

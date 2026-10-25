@@ -10,6 +10,8 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.2 REQUIRED COMPONENTS Sql Widgets)
 
 add_executable(astrocapture
+    src/application/capture_configuration_service.cpp
+    src/application/capture_configuration_service.h
     src/application/session_service.cpp
     src/application/session_service.h
     src/application/capture_frame_service.cpp
@@ -62,11 +64,18 @@ if(BUILD_TESTING)
     find_package(Qt6 6.2 REQUIRED COMPONENTS Test)
 
     add_executable(astrocapture_tests
+        src/application/capture_configuration_service.cpp
+        src/application/capture_configuration_service.h
         src/application/session_service.cpp
         src/application/session_service.h
+        src/domain/camera.h
         src/domain/capture_entities.cpp
         src/domain/capture_entities.h
+        src/domain/repositories/capture_run_repository.h
+        src/domain/repositories/frame_repository.h
         src/domain/repositories/session_repository.h
+        src/infrastructure/camera/simulated_camera.cpp
+        src/infrastructure/camera/simulated_camera.h
         src/infrastructure/persistence/sqlite_database.cpp
         src/infrastructure/persistence/sqlite_database.h
         src/infrastructure/persistence/sqlite_repositories.cpp
