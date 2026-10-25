@@ -1,0 +1,259 @@
+#include "application/capture_frame_service.h"
+#include "domain/repositories/repository_errors.h"
+#include "infrastructure/camera/simulated_camera.h"
+#include "infrastructure/persistence/sqlite_database.h"
+#include "infrastructure/persistence/sqlite_repositories.h"
+
+#include <QDir>
+#include <QFile>
+#include <QTemporaryDir>
+#include <QtTest>
+
+#include <chrono>
+#include <optional>
+#include <variant>
+#include <vector>
+
+using namespace std::chrono_literals;
+using namespace application;
+using namespace domain;
+using namespace infrastructure;
+
+namespace {
+
+class RecordingLoggingService final : public LoggingService
+{
+public:
+    void log(const LogEvent& event) override
+    {
+        events.push_back(event);
+    }
+
+    std::vector<LogEvent> events;
+};
+
+class TransferFailingCamera final : public ICamera
+{
+public:
+    CameraOperationResult connect() override
+    {
+        return camera_.connect();
+    }
+
+    CameraOperationResult disconnect() override
+    {
+        return camera_.disconnect();
+    }
+
+    CameraResult<CameraCapabilities> capabilities() const override
+    {
+        return camera_.capabilities();
+    }
+
+    CameraResult<CameraSettings> settings() const override
+    {
+        return camera_.settings();
+    }
+
+    CameraOperationResult applySettings(const CameraSettings& settings) override
+    {
+        return camera_.applySettings(settings);
+    }
+
+    CameraResult<CameraCapture> capture(const CaptureRequest& request) override
+    {
+        return camera_.capture(request);
+    }
+
+    CameraOperationResult transfer(
+        const CameraCapture&,
+        std::ostream&,
+        TransferProgressCallback) override
+    {
+        return CameraError{
+            CameraErrorCode::TransferFailed,
+            "Injected transfer failure",
+            "transfer",
+            "TransferFailingCamera"
+        };
+    }
+
+    CameraOperationResult startLiveView() override
+    {
+        return camera_.startLiveView();
+    }
+
+    CameraOperationResult stopLiveView() override
+    {
+        return camera_.stopLiveView();
+    }
+
+private:
+    SimulatedCamera camera_;
+};
+
+struct CaptureFixture
+{
+    explicit CaptureFixture(const QString& rootPath, CaptureSettings settings = {
+        FrameType::Light,
+        5s,
+        800,
+        CaptureMode::Finite,
+        1
+    })
+        : database(QDir(rootPath).filePath(QStringLiteral("capture.sqlite3")))
+        , session("session-1", target.id(), "Observation", SessionStage::Capture, Timestamp{1s}, Timestamp{1s})
+        , captureRun("run-1", session.id(), std::chrono::year{2026} / 10 / 25, settings)
+        , sessions(database)
+        , runs(database)
+        , frames(database)
+        , imageStorage(StorageLayout(QDir(rootPath).filePath(QStringLiteral("images"))))
+    {
+        database.open();
+        sessions.create(target, session);
+        captureRun.start();
+        runs.create(captureRun);
+    }
+
+    Target target{"target-1", "M42"};
+    SqliteDatabase database;
+    Session session;
+    CaptureRun captureRun;
+    SqliteSessionRepository sessions;
+    SqliteCaptureRunRepository runs;
+    SqliteFrameRepository frames;
+    ImageStorage imageStorage;
+};
+
+} // namespace
+
+class CaptureFrameServiceTest final : public QObject
+{
+    Q_OBJECT
+
+private slots:
+    void simulatedCaptureStoresImageAndCompletedMetadata()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(directory.path());
+        SimulatedCamera camera;
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
+        RecordingLoggingService logging;
+        CaptureFrameService service(
+            camera,
+            fixture.frames,
+            fixture.imageStorage,
+            logging,
+            fixture.target,
+            fixture.session,
+            fixture.captureRun);
+
+        std::vector<CaptureFrameProgress> progress;
+        const Frame frame = service.execute(
+            "frame-1",
+            [&progress](const CaptureFrameProgress& update) {
+                progress.push_back(update);
+            });
+
+        QCOMPARE(frame.state(), FrameState::Completed);
+        QCOMPARE(frame.type(), FrameType::Light);
+        QVERIFY(frame.filePath().has_value());
+        QVERIFY(frame.filePath()->is_absolute());
+        QVERIFY(frame.fileSize().has_value());
+        const auto persistedFrame = fixture.frames.findById(frame.id());
+        QVERIFY(persistedFrame.has_value());
+        QCOMPARE(persistedFrame->state(), FrameState::Completed);
+        QCOMPARE(persistedFrame->filePath(), frame.filePath());
+        QCOMPARE(persistedFrame->fileSize(), frame.fileSize());
+
+        const QString filePath = QString::fromLocal8Bit(frame.filePath()->c_str());
+        QFile image(filePath);
+        QVERIFY(image.open(QIODevice::ReadOnly));
+        const QByteArray bytes = image.readAll();
+        QVERIFY(bytes.startsWith("P5\n8 8\n255\n"));
+        QCOMPARE(static_cast<std::uint64_t>(bytes.size()), *frame.fileSize());
+
+        QVERIFY(!progress.empty());
+        QCOMPARE(progress.front().state, FrameState::Pending);
+        QCOMPARE(progress.back().state, FrameState::Completed);
+        bool reportedTransferProgress = false;
+        for (const CaptureFrameProgress& update : progress) {
+            if (update.transfer) {
+                reportedTransferProgress = true;
+                QCOMPARE(update.state, FrameState::Transferring);
+                QCOMPARE(update.transfer->bytesTransferred, *frame.fileSize());
+            }
+        }
+        QVERIFY(reportedTransferProgress);
+        QCOMPARE(logging.events.size(), std::size_t{5});
+        QCOMPARE(logging.events.back().state, std::optional<QString>{QStringLiteral("Completed")});
+    }
+
+    void transferFailurePersistsFailedFrameAndNeverReportsSuccess()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(directory.path());
+        TransferFailingCamera camera;
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
+        RecordingLoggingService logging;
+        CaptureFrameService service(
+            camera,
+            fixture.frames,
+            fixture.imageStorage,
+            logging,
+            fixture.target,
+            fixture.session,
+            fixture.captureRun);
+
+        bool caughtFailure = false;
+        try {
+            service.execute("frame-failed");
+        } catch (const CaptureFrameError& error) {
+            caughtFailure = true;
+            QCOMPARE(error.stage(), CaptureFrameStage::Transfer);
+            QCOMPARE(error.frameId(), FrameId("frame-failed"));
+            QVERIFY(error.cameraError().has_value());
+            QCOMPARE(error.cameraError()->code, CameraErrorCode::TransferFailed);
+        }
+        QVERIFY(caughtFailure);
+
+        const auto failedFrame = fixture.frames.findById("frame-failed");
+        QVERIFY(failedFrame.has_value());
+        QCOMPARE(failedFrame->state(), FrameState::Failed);
+        QVERIFY(failedFrame->errorMessage().has_value());
+        QVERIFY(!failedFrame->filePath().has_value());
+        QCOMPARE(logging.events.back().severity, LogSeverity::Error);
+        QCOMPARE(logging.events.back().state, std::optional<QString>{QStringLiteral("Failed")});
+    }
+
+    void unsupportedSettingsAreRejectedBeforeCreatingAFrame()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(
+            directory.path(),
+            CaptureSettings{FrameType::Dark, 31min, 800, CaptureMode::Finite, 1});
+        SimulatedCamera camera;
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
+        RecordingLoggingService logging;
+        CaptureFrameService service(
+            camera,
+            fixture.frames,
+            fixture.imageStorage,
+            logging,
+            fixture.target,
+            fixture.session,
+            fixture.captureRun);
+
+        QVERIFY_EXCEPTION_THROWN(
+            service.execute("invalid-frame"),
+            CaptureFrameError);
+        QVERIFY(!fixture.frames.findById("invalid-frame").has_value());
+    }
+};
+
+QTEST_GUILESS_MAIN(CaptureFrameServiceTest)
+
+#include "test_capture_frame_service.moc"

@@ -10,6 +10,8 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.2 REQUIRED COMPONENTS Sql Widgets)
 
 add_executable(astrocapture
+    src/application/capture_frame_service.cpp
+    src/application/capture_frame_service.h
     src/application/session_recovery_service.cpp
     src/application/session_recovery_service.h
     src/app/main.cpp
@@ -106,6 +108,40 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME astrocapture_camera_tests COMMAND astrocapture_camera_tests)
+
+    add_executable(astrocapture_capture_frame_tests
+        src/application/capture_frame_service.cpp
+        src/application/capture_frame_service.h
+        src/domain/capture_entities.cpp
+        src/domain/capture_entities.h
+        src/domain/camera.h
+        src/domain/logging/log_event.h
+        src/domain/logging/logging_service.h
+        src/domain/repositories/capture_run_repository.h
+        src/domain/repositories/frame_repository.h
+        src/domain/repositories/repository_errors.h
+        src/domain/repositories/session_repository.h
+        src/infrastructure/camera/simulated_camera.cpp
+        src/infrastructure/camera/simulated_camera.h
+        src/infrastructure/persistence/sqlite_database.cpp
+        src/infrastructure/persistence/sqlite_database.h
+        src/infrastructure/persistence/sqlite_repositories.cpp
+        src/infrastructure/persistence/sqlite_repositories.h
+        src/infrastructure/storage/image_storage.cpp
+        src/infrastructure/storage/image_storage.h
+        src/infrastructure/storage/storage_layout.cpp
+        src/infrastructure/storage/storage_layout.h
+        tests/unit/test_capture_frame_service.cpp
+    )
+
+    target_include_directories(astrocapture_capture_frame_tests PRIVATE src)
+    target_link_libraries(astrocapture_capture_frame_tests PRIVATE Qt6::Sql Qt6::Test)
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(astrocapture_capture_frame_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME astrocapture_capture_frame_tests COMMAND astrocapture_capture_frame_tests)
 
     add_executable(astrocapture_persistence_tests
         src/infrastructure/persistence/sqlite_database.cpp
