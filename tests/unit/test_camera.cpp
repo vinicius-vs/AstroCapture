@@ -3,7 +3,9 @@
 
 #include <QtTest>
 
+#include <algorithm>
 #include <sstream>
+#include <vector>
 
 using namespace domain;
 using namespace infrastructure;
@@ -219,6 +221,128 @@ private slots:
         QCOMPARE(
             std::get<CameraError>(disconnectedCapture).code,
             CameraErrorCode::NotConnected);
+    }
+
+    void configuredExposureFailureIsReproducibleAndOneShot()
+    {
+        SimulatedCameraOptions options;
+        options.failures.failExposureOnCall = 1;
+        SimulatedCamera firstCamera(options);
+        SimulatedCamera secondCamera(options);
+        firstCamera.connect();
+        secondCamera.connect();
+
+        const auto firstFailure = firstCamera.capture(CaptureRequest{CameraSettings{1ms, 800}});
+        const auto repeatedFailure = secondCamera.capture(
+            CaptureRequest{CameraSettings{1ms, 800}});
+        QVERIFY(std::holds_alternative<CameraError>(firstFailure));
+        QVERIFY(std::holds_alternative<CameraError>(repeatedFailure));
+        QCOMPARE(
+            std::get<CameraError>(firstFailure).code,
+            CameraErrorCode::CaptureFailed);
+        QCOMPARE(
+            std::get<CameraError>(firstFailure).message,
+            std::get<CameraError>(repeatedFailure).message);
+
+        const auto retry = firstCamera.capture(CaptureRequest{CameraSettings{1ms, 800}});
+        QVERIFY(std::holds_alternative<CameraCapture>(retry));
+    }
+
+    void configuredExposureDelayIsApplied()
+    {
+        SimulatedCameraOptions options;
+        options.exposureDelay = 10ms;
+        SimulatedCamera camera(options);
+        camera.connect();
+
+        const auto start = std::chrono::steady_clock::now();
+        const auto result = camera.capture(CaptureRequest{CameraSettings{1ms, 800}});
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+
+        QVERIFY(std::holds_alternative<CameraCapture>(result));
+        QVERIFY(elapsed >= 8ms);
+    }
+
+    void realisticTransferReportsProgressForEachChunkAndCanFailAfterBytes()
+    {
+        SimulatedCameraOptions options;
+        options.transferChunkSize = 10;
+        options.transferChunkDelay = 1ms;
+        options.failures.failTransferOnCall = 1;
+        options.failures.failTransferAfterBytes = 20;
+        SimulatedCamera camera(options);
+        camera.connect();
+        const auto captureResult = camera.capture(CaptureRequest{CameraSettings{1ms, 800}});
+        QVERIFY(std::holds_alternative<CameraCapture>(captureResult));
+
+        std::vector<TransferProgress> updates;
+        std::ostringstream destination(std::ios::binary);
+        const auto result = camera.transfer(
+            std::get<CameraCapture>(captureResult),
+            destination,
+            [&updates](const TransferProgress& update) {
+                updates.push_back(update);
+            });
+
+        QVERIFY(std::holds_alternative<CameraError>(result));
+        QCOMPARE(std::get<CameraError>(result).code, CameraErrorCode::TransferFailed);
+        QCOMPARE(destination.str().size(), std::size_t{20});
+        QCOMPARE(updates.size(), std::size_t{2});
+        QCOMPARE(updates[0].bytesTransferred, std::uint64_t{10});
+        QCOMPARE(updates[1].bytesTransferred, std::uint64_t{20});
+        QCOMPARE(updates[1].totalBytes, std::get<CameraCapture>(captureResult).expectedSize);
+    }
+
+    void configuredDisconnectionAndInvalidFileAreReported()
+    {
+        SimulatedCameraOptions disconnectOptions;
+        disconnectOptions.failures.disconnectOnTransferCall = 1;
+        disconnectOptions.failures.failTransferAfterBytes = 12;
+        SimulatedCamera disconnectedCamera(disconnectOptions);
+        disconnectedCamera.connect();
+        const auto captureResult =
+            disconnectedCamera.capture(CaptureRequest{CameraSettings{1ms, 800}});
+        QVERIFY(std::holds_alternative<CameraCapture>(captureResult));
+
+        std::ostringstream destination(std::ios::binary);
+        const auto transferResult = disconnectedCamera.transfer(
+            std::get<CameraCapture>(captureResult),
+            destination);
+        QVERIFY(std::holds_alternative<CameraError>(transferResult));
+        QCOMPARE(
+            std::get<CameraError>(transferResult).code,
+            CameraErrorCode::DeviceDisconnected);
+        QCOMPARE(destination.str().size(), std::size_t{12});
+        QVERIFY(std::holds_alternative<CameraError>(disconnectedCamera.settings()));
+        QCOMPARE(
+            std::get<CameraError>(disconnectedCamera.settings()).code,
+            CameraErrorCode::NotConnected);
+
+        SimulatedCameraOptions invalidFileOptions;
+        invalidFileOptions.failures.invalidFileOnCaptureCall = 1;
+        SimulatedCamera invalidFileCamera(invalidFileOptions);
+        invalidFileCamera.connect();
+        const auto invalidCapture =
+            invalidFileCamera.capture(CaptureRequest{CameraSettings{1ms, 800}});
+        QVERIFY(std::holds_alternative<CameraCapture>(invalidCapture));
+        QVERIFY(
+            std::get<CameraCapture>(invalidCapture).fileExtension != std::string(".pgm"));
+    }
+
+    void simulatedCameraRejectsInvalidFailurePlans()
+    {
+        SimulatedCameraOptions invalidCall;
+        invalidCall.failures.failExposureOnCall = 0;
+        QVERIFY_EXCEPTION_THROWN(
+            static_cast<void>(SimulatedCamera{invalidCall}),
+            std::invalid_argument);
+
+        SimulatedCameraOptions conflictingCalls;
+        conflictingCalls.failures.failTransferOnCall = 1;
+        conflictingCalls.failures.disconnectOnTransferCall = 1;
+        QVERIFY_EXCEPTION_THROWN(
+            static_cast<void>(SimulatedCamera{conflictingCalls}),
+            std::invalid_argument);
     }
 };
 

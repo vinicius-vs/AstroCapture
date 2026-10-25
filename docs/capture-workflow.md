@@ -480,7 +480,7 @@ Além das funções básicas, deve permitir configurar:
 - Arquivo inválido.
 - Interrupção durante uma sequência.
 
-As falhas devem poder ser reproduzidas em testes, preferencialmente por configuração, para que os cenários não dependam de comportamento aleatório.
+No modo realista, o simulador aceita atrasos configuráveis de exposição e de cada bloco de transferência. Um plano de falhas pode selecionar chamadas numeradas (a partir de um) para erro ao aplicar configurações, falha de exposição, falha de transferência, desconexão durante a transferência ou extensão de arquivo inválida. A transferência em blocos emite progresso após cada bloco; planos e atrasos são desativados por padrão. Isso permite reproduzir pausas e decisões de recuperação sem tornar a lógica de produção dependente de esperas artificiais ou aleatoriedade.
 
 ## 16. Registro e diagnóstico
 

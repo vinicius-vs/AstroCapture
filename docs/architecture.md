@@ -270,13 +270,13 @@ Implementará o mesmo contrato da câmera física.
 **Modo realista:**
 
 - Duração configurável das exposições.
-- Atraso e progresso da transferência.
-- Falhas injetáveis.
+- Transferência em blocos com atraso e progresso por bloco.
+- Plano de falhas por número de chamada, incluindo erro de configuração, exposição, transferência, desconexão durante a transferência e metadados de arquivo inválidos.
 - Desconexão simulada.
 - Interrupção de sequências.
 - Testes de recuperação após operações incompletas.
 
-Os testes deverão permitir controlar a ocorrência das falhas, evitando depender de comportamentos aleatórios.
+Os planos de falha usam índices de chamada iniciados em um, são determinísticos e não dependem de aleatoriedade. Atrasos e falhas são desativados por padrão; a lógica de produção não depende da temporização do simulador.
 
 ## 6. Concorrência e comunicação
 

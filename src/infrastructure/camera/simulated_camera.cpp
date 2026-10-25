@@ -1,11 +1,14 @@
 #include "infrastructure/camera/simulated_camera.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <ios>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace infrastructure {
@@ -15,6 +18,7 @@ using namespace domain;
 
 constexpr std::string_view CaptureIdPrefix{"simulated-capture-"};
 constexpr std::string_view TestImageHeader{"P5\n8 8\n255\n"};
+constexpr std::string_view InvalidImageExtension{".invalid!"};
 constexpr std::array<unsigned char, 64> TestImagePixels{
     0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0,
@@ -86,6 +90,40 @@ bool isCaptureIdValid(const CameraCapture& capture, std::uint64_t lastCaptureId)
 
 } // namespace
 
+SimulatedCamera::SimulatedCamera(SimulatedCameraOptions options)
+    : options_(std::move(options))
+{
+    if (options_.exposureDelay < std::chrono::milliseconds::zero()
+        || options_.transferChunkDelay < std::chrono::milliseconds::zero()
+        || options_.transferChunkSize == 0) {
+        throw std::invalid_argument("Simulated camera delays and chunk size must be valid");
+    }
+    const auto validCall = [](const std::optional<std::uint64_t>& call) {
+        return !call || *call > 0;
+    };
+    if (!validCall(options_.failures.failApplySettingsOnCall)
+        || !validCall(options_.failures.failExposureOnCall)
+        || !validCall(options_.failures.failTransferOnCall)
+        || !validCall(options_.failures.disconnectOnTransferCall)
+        || !validCall(options_.failures.invalidFileOnCaptureCall)) {
+        throw std::invalid_argument("Simulated failure call numbers must be one-based");
+    }
+    if (options_.failures.failTransferOnCall
+        && options_.failures.disconnectOnTransferCall
+        && options_.failures.failTransferOnCall
+            == options_.failures.disconnectOnTransferCall) {
+        throw std::invalid_argument(
+            "A simulated transfer call cannot fail and disconnect at the same time");
+    }
+    if ((options_.failures.failTransferOnCall
+         || options_.failures.disconnectOnTransferCall)
+        && options_.failures.failTransferAfterBytes
+            > TestImageHeader.size() + TestImagePixels.size()) {
+        throw std::invalid_argument(
+            "Simulated transfer failure byte offset exceeds the test image size");
+    }
+}
+
 CameraOperationResult SimulatedCamera::connect()
 {
     connected_ = true;
@@ -126,6 +164,19 @@ CameraOperationResult SimulatedCamera::applySettings(const CameraSettings& setti
         return error(
             CameraErrorCode::NotConnected,
             "Simulated camera is not connected",
+            "applySettings");
+    }
+    if (applySettingsCallCount_ == std::numeric_limits<std::uint64_t>::max()) {
+        return error(
+            CameraErrorCode::InvalidSettings,
+            "Simulated settings call counter is exhausted",
+            "applySettings");
+    }
+    ++applySettingsCallCount_;
+    if (options_.failures.failApplySettingsOnCall == applySettingsCallCount_) {
+        return error(
+            CameraErrorCode::InvalidSettings,
+            "Injected simulated settings failure",
             "applySettings");
     }
     if (settings.exposure && !isSupportedExposure(*settings.exposure)) {
@@ -179,10 +230,29 @@ CameraResult<CameraCapture> SimulatedCamera::capture(const CaptureRequest& reque
             "capture");
     }
 
+    if (captureCallCount_ == std::numeric_limits<std::uint64_t>::max()) {
+        return error(
+            CameraErrorCode::CaptureFailed,
+            "Simulated capture call counter is exhausted",
+            "capture");
+    }
+    ++captureCallCount_;
+    if (options_.exposureDelay > std::chrono::milliseconds::zero()) {
+        std::this_thread::sleep_for(options_.exposureDelay);
+    }
+    if (options_.failures.failExposureOnCall == captureCallCount_) {
+        return error(
+            CameraErrorCode::CaptureFailed,
+            "Injected simulated exposure failure",
+            "capture");
+    }
+
     ++nextCaptureId_;
     return CameraCapture{
         std::string(CaptureIdPrefix) + std::to_string(nextCaptureId_),
-        ".pgm",
+        options_.failures.invalidFileOnCaptureCall == captureCallCount_
+            ? std::string(InvalidImageExtension)
+            : ".pgm",
         static_cast<std::uint64_t>(testImage().size())
     };
 }
@@ -205,6 +275,14 @@ CameraOperationResult SimulatedCamera::transfer(
             "transfer");
     }
 
+    if (transferCallCount_ == std::numeric_limits<std::uint64_t>::max()) {
+        return error(
+            CameraErrorCode::TransferFailed,
+            "Simulated transfer call counter is exhausted",
+            "transfer");
+    }
+    ++transferCallCount_;
+
     const std::string image = testImage();
     if (capture.expectedSize && *capture.expectedSize != image.size()) {
         return error(
@@ -213,24 +291,89 @@ CameraOperationResult SimulatedCamera::transfer(
             "transfer");
     }
 
-    try {
-        destination.write(image.data(), static_cast<std::streamsize>(image.size()));
-    } catch (const std::ios_base::failure&) {
+    if (options_.failures.failTransferOnCall == transferCallCount_
+        && options_.failures.failTransferAfterBytes == 0) {
         return error(
             CameraErrorCode::TransferFailed,
-            "Unable to write the simulated image to the destination",
-            "transfer");
-    }
-    if (!destination) {
-        return error(
-            CameraErrorCode::TransferFailed,
-            "Unable to write the simulated image to the destination",
+            "Injected simulated transfer failure",
             "transfer");
     }
 
-    if (progress) {
-        const auto size = static_cast<std::uint64_t>(image.size());
-        progress(TransferProgress{size, size});
+    const std::uint64_t totalBytes = static_cast<std::uint64_t>(image.size());
+    std::uint64_t bytesTransferred = 0;
+    while (bytesTransferred < totalBytes) {
+        if (options_.failures.disconnectOnTransferCall == transferCallCount_
+            && bytesTransferred >= options_.failures.failTransferAfterBytes) {
+            connected_ = false;
+            return error(
+                CameraErrorCode::DeviceDisconnected,
+                "Injected simulated device disconnection during transfer",
+                "transfer");
+        }
+        if (options_.failures.failTransferOnCall == transferCallCount_
+            && bytesTransferred >= options_.failures.failTransferAfterBytes) {
+            return error(
+                CameraErrorCode::TransferFailed,
+                "Injected simulated transfer failure",
+                "transfer");
+        }
+
+        std::uint64_t chunkSize = std::min(
+            options_.transferChunkSize,
+            totalBytes - bytesTransferred);
+        if (options_.failures.failTransferOnCall == transferCallCount_) {
+            chunkSize = std::min(
+                chunkSize,
+                options_.failures.failTransferAfterBytes - bytesTransferred);
+        }
+        if (options_.failures.disconnectOnTransferCall == transferCallCount_) {
+            chunkSize = std::min(
+                chunkSize,
+                options_.failures.failTransferAfterBytes - bytesTransferred);
+        }
+        if (chunkSize == 0) {
+            continue;
+        }
+
+        try {
+            destination.write(
+                image.data() + bytesTransferred,
+                static_cast<std::streamsize>(chunkSize));
+        } catch (const std::ios_base::failure&) {
+            return error(
+                CameraErrorCode::TransferFailed,
+                "Unable to write the simulated image to the destination",
+                "transfer");
+        }
+        if (!destination) {
+            return error(
+                CameraErrorCode::TransferFailed,
+                "Unable to write the simulated image to the destination",
+                "transfer");
+        }
+
+        bytesTransferred += chunkSize;
+        if (options_.transferChunkDelay > std::chrono::milliseconds::zero()) {
+            std::this_thread::sleep_for(options_.transferChunkDelay);
+        }
+        if (progress) {
+            progress(TransferProgress{bytesTransferred, totalBytes});
+        }
+    }
+    if (options_.failures.disconnectOnTransferCall == transferCallCount_
+        && bytesTransferred >= options_.failures.failTransferAfterBytes) {
+        connected_ = false;
+        return error(
+            CameraErrorCode::DeviceDisconnected,
+            "Injected simulated device disconnection during transfer",
+            "transfer");
+    }
+    if (options_.failures.failTransferOnCall == transferCallCount_
+        && bytesTransferred >= options_.failures.failTransferAfterBytes) {
+        return error(
+            CameraErrorCode::TransferFailed,
+            "Injected simulated transfer failure",
+            "transfer");
     }
     return std::monostate{};
 }
