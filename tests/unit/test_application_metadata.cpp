@@ -1,6 +1,7 @@
 #include "app/application_metadata.h"
 #include "application/capture_frame_service.h"
 #include "application/capture_configuration_service.h"
+#include "application/capture_preview_service.h"
 #include "application/session_recovery_service.h"
 #include "application/session_service.h"
 #include "infrastructure/camera/simulated_camera.h"
@@ -21,8 +22,10 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QFile>
 #include <QFrame>
 #include <QGridLayout>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -420,7 +423,16 @@ private slots:
             domain::SessionStage::Stacking);
         application::CaptureConfigurationService captureConfigurationService(
             repository, captureRunRepository, camera);
-        MainWindow window(service, captureConfigurationService, camera, directory.path());
+        application::CapturePreviewService previewService(
+            captureRunRepository,
+            frameRepository);
+        MainWindow window(
+            service,
+            captureConfigurationService,
+            camera,
+            directory.path(),
+            nullptr,
+            &previewService);
 
         auto* libraryNavigation =
             window.findChild<QPushButton*>(QStringLiteral("libraryNavigationButton"));
@@ -470,6 +482,13 @@ private slots:
         QVERIFY(pages);
         QCOMPARE(pages->currentWidget()->objectName(), QStringLiteral("captureConfigurationPage"));
         QVERIFY(!QApplication::activeModalWidget());
+        auto* previewStatus =
+            window.findChild<QLabel*>(QStringLiteral("capturePreviewStatus"));
+        QVERIFY(previewStatus);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            previewStatus->text(),
+            QStringLiteral("Nenhuma imagem disponível."),
+            3000);
         QVERIFY(repository.findById(records.front().session.id())->isOpen);
         QVERIFY(activeSession->text().contains(QStringLiteral("Sessão aberta: Outubro")));
         auto* captureBackButton =
@@ -505,6 +524,115 @@ private slots:
         QCOMPARE(activeSession->text(), QStringLiteral("Nenhuma sessão aberta"));
     }
 
+    void opensLatestCompletedImageAsPreviewWithoutChangingOriginal()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        infrastructure::SqliteDatabase database(
+            QDir(directory.path()).filePath(QStringLiteral("astrocapture.sqlite3")));
+        database.open();
+        infrastructure::SqliteSessionRepository sessionRepository(database);
+        infrastructure::SqliteCaptureRunRepository captureRunRepository(database);
+        infrastructure::SqliteFrameRepository frameRepository(database);
+        infrastructure::SimulatedCamera camera;
+        infrastructure::StorageLayout storageLayout(
+            QDir(directory.path()).filePath(QStringLiteral("images")));
+        application::SessionService sessionService(sessionRepository, storageLayout);
+        const auto session = sessionService.createSession(
+            QStringLiteral("M42"),
+            QStringLiteral("Preview test"),
+            domain::SessionStage::Capture);
+        application::CaptureConfigurationService configurationService(
+            sessionRepository,
+            captureRunRepository,
+            camera);
+        const auto captureRun = configurationService.configureSequence(
+            session.session.id(),
+            domain::CaptureSettings{
+                domain::FrameType::Light,
+                std::chrono::seconds{1},
+                std::nullopt,
+                domain::CaptureMode::Finite,
+                1u});
+
+        const QString imagePath = QDir(directory.path()).filePath(QStringLiteral("original.png"));
+        QImage original(64, 48, QImage::Format_RGB32);
+        original.fill(Qt::darkBlue);
+        QVERIFY(original.save(imagePath));
+        QFile imageFile(imagePath);
+        QVERIFY(imageFile.open(QIODevice::ReadOnly));
+        const QByteArray originalBytes = imageFile.readAll();
+        imageFile.close();
+
+        domain::Frame frame(
+            "preview-frame",
+            captureRun.id(),
+            domain::FrameType::Light,
+            std::chrono::seconds{1});
+        frameRepository.create(frame);
+        frame.startExposure(std::chrono::time_point_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now()));
+        frameRepository.update(frame);
+        frame.startTransfer();
+        frameRepository.update(frame);
+        frame.startValidation();
+        frameRepository.update(frame);
+        frame.completeValidation(
+            std::filesystem::path(imagePath.toStdString()),
+            static_cast<std::uint64_t>(originalBytes.size()));
+        frameRepository.update(frame);
+
+        application::CapturePreviewService previewService(
+            captureRunRepository,
+            frameRepository);
+        MainWindow window(
+            sessionService,
+            configurationService,
+            camera,
+            directory.path(),
+            nullptr,
+            &previewService);
+        window.findChild<QPushButton*>(QStringLiteral("libraryNavigationButton"))->click();
+        auto* sessionList = window.findChild<QListWidget*>(QStringLiteral("sessionList"));
+        QVERIFY(sessionList);
+        QVERIFY(sessionList->itemWidget(sessionList->item(0)));
+        auto* menuButton = sessionList->itemWidget(sessionList->item(0))
+                               ->findChild<QToolButton*>(QStringLiteral("sessionMenuButton"));
+        QVERIFY(menuButton);
+        QVERIFY(menuButton->menu());
+        menuButton->menu()->actions().at(0)->trigger();
+
+        auto* previewStatus = window.findChild<QLabel*>(QStringLiteral("capturePreviewStatus"));
+        QVERIFY(previewStatus);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            previewStatus->text(),
+            QStringLiteral("Último quadro concluído."),
+            3000);
+        QFile unchangedImage(imagePath);
+        QVERIFY(unchangedImage.open(QIODevice::ReadOnly));
+        QCOMPARE(unchangedImage.readAll(), originalBytes);
+        unchangedImage.close();
+
+        QVERIFY(unchangedImage.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QCOMPARE(unchangedImage.write("invalid image data"), qint64(18));
+        unchangedImage.close();
+        window.findChild<QPushButton*>(QStringLiteral("captureBackButton"))->click();
+        QVERIFY(sessionList);
+        auto* row = sessionList->itemWidget(sessionList->item(0));
+        QVERIFY(row);
+        menuButton = row->findChild<QToolButton*>(QStringLiteral("sessionMenuButton"));
+        QVERIFY(menuButton);
+        QVERIFY(menuButton->menu());
+        menuButton->menu()->actions().at(0)->trigger();
+        previewStatus = window.findChild<QLabel*>(QStringLiteral("capturePreviewStatus"));
+        QVERIFY(previewStatus);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            previewStatus->text(),
+            QStringLiteral(
+                "Pré-visualização indisponível: arquivo inválido ou formato não suportado."),
+            3000);
+    }
+
     void startSessionActionOpensCaptureConfigurationPageAndCreatesSession()
     {
         QTemporaryDir directory;
@@ -521,7 +649,16 @@ private slots:
         application::SessionService service(repository, storageLayout);
         application::CaptureConfigurationService captureConfigurationService(
             repository, captureRunRepository, camera);
-        MainWindow window(service, captureConfigurationService, camera, directory.path());
+        application::CapturePreviewService previewService(
+            captureRunRepository,
+            frameRepository);
+        MainWindow window(
+            service,
+            captureConfigurationService,
+            camera,
+            directory.path(),
+            nullptr,
+            &previewService);
         auto* startAction = window.findChild<QPushButton*>(QStringLiteral("startCaptureAction"));
         QVERIFY(startAction);
 
@@ -615,6 +752,13 @@ private slots:
         QVERIFY(sequenceMetrics);
         QVERIFY(sequenceMetrics->text().contains(QStringLiteral("Pendentes: 0")));
         QVERIFY(sequenceMetrics->text().contains(QStringLiteral("Falhas: 0")));
+        auto* previewStatus =
+            window.findChild<QLabel*>(QStringLiteral("capturePreviewStatus"));
+        QVERIFY(previewStatus);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            previewStatus->text(),
+            QStringLiteral("Último quadro concluído."),
+            3000);
 
         const auto sessions = repository.findAll();
         QCOMPARE(sessions.size(), std::size_t{1});

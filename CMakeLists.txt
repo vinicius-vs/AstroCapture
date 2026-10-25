@@ -7,11 +7,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.2 REQUIRED COMPONENTS Sql Widgets)
+find_package(Qt6 6.2 REQUIRED COMPONENTS Concurrent Sql Widgets)
 
 add_executable(astrocapture
     src/application/capture_configuration_service.cpp
     src/application/capture_configuration_service.h
+    src/application/capture_preview_service.cpp
+    src/application/capture_preview_service.h
     src/application/session_service.cpp
     src/application/session_service.h
     src/application/capture_frame_service.cpp
@@ -53,7 +55,7 @@ add_executable(astrocapture
 )
 
 target_include_directories(astrocapture PRIVATE src)
-target_link_libraries(astrocapture PRIVATE Qt6::Sql Qt6::Widgets)
+target_link_libraries(astrocapture PRIVATE Qt6::Concurrent Qt6::Sql Qt6::Widgets)
 target_compile_definitions(astrocapture PRIVATE
     ASTROCAPTURE_VERSION="${PROJECT_VERSION}"
 )
@@ -70,6 +72,8 @@ if(BUILD_TESTING)
     add_executable(astrocapture_tests
         src/application/capture_configuration_service.cpp
         src/application/capture_configuration_service.h
+        src/application/capture_preview_service.cpp
+        src/application/capture_preview_service.h
         src/application/capture_frame_service.cpp
         src/application/capture_frame_service.h
         src/application/capture_sequence_service.cpp
@@ -108,7 +112,7 @@ if(BUILD_TESTING)
     )
 
     target_include_directories(astrocapture_tests PRIVATE src)
-    target_link_libraries(astrocapture_tests PRIVATE Qt6::Sql Qt6::Test Qt6::Widgets)
+    target_link_libraries(astrocapture_tests PRIVATE Qt6::Concurrent Qt6::Sql Qt6::Test Qt6::Widgets)
     target_compile_definitions(astrocapture_tests PRIVATE
         ASTROCAPTURE_VERSION="${PROJECT_VERSION}"
     )

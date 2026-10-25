@@ -21,6 +21,7 @@ class QStackedWidget;
 class QWidget;
 
 namespace application {
+class CapturePreviewService;
 class CaptureConfigurationService;
 class SessionRecoveryService;
 class SessionService;
@@ -40,6 +41,7 @@ public:
         domain::ICamera& camera,
         QString applicationDataDirectory,
         application::SessionRecoveryService* sessionRecoveryService = nullptr,
+        application::CapturePreviewService* capturePreviewService = nullptr,
         QWidget* parent = nullptr);
 
 private:
@@ -50,6 +52,8 @@ private:
     void showCaptureConfigurationPage(const std::string& sessionId, bool returnHome);
     void startCapture(domain::CaptureRun captureRun);
     void inspectSessionRecovery(const domain::SessionRecord& session);
+    void loadCapturePreview(const std::string& sessionId);
+    void decodeCapturePreview(const QString& imagePath);
     void requestCaptureStop();
     void openSession(const std::string& sessionId);
     void showSessionInformation(const std::string& sessionId);
@@ -64,6 +68,7 @@ private:
     domain::ICamera& camera_;
     QString applicationDataDirectory_;
     application::SessionRecoveryService* sessionRecoveryService_{};
+    application::CapturePreviewService* capturePreviewService_{};
     QStackedWidget* pages_{};
     QWidget* homePage_{};
     QWidget* sessionsPage_{};
@@ -76,6 +81,8 @@ private:
     QLabel* captureSequenceMetricsLabel_{};
     QLabel* captureElapsedLabel_{};
     QLabel* captureStatisticsLabel_{};
+    QLabel* capturePreviewImageLabel_{};
+    QLabel* capturePreviewStatusLabel_{};
     QProgressBar* captureProgressBar_{};
     QPushButton* captureStartButton_{};
     QPushButton* captureStopButton_{};
@@ -87,4 +94,5 @@ private:
     std::shared_ptr<std::atomic_bool> captureStopRequested_;
     bool closeAfterCapture_{};
     std::string activeSessionId_;
+    quint64 previewRequestId_{};
 };

@@ -33,6 +33,7 @@ signals:
         const QString& details,
         qint64 elapsedMilliseconds);
     void statisticsChanged(const QString& details);
+    void previewAvailable(const QString& imagePath);
     void captureCompleted(quint32 completed, bool paused);
     void captureFailed(const QString& message);
     void finished();

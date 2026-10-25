@@ -1,5 +1,6 @@
 #include "app/application_metadata.h"
 #include "application/capture_configuration_service.h"
+#include "application/capture_preview_service.h"
 #include "application/session_recovery_service.h"
 #include "application/session_service.h"
 #include "domain/logging/log_event.h"
@@ -61,12 +62,16 @@ int main(int argc, char* argv[])
             sessionRepository,
             captureRunRepository,
             simulatedCamera);
+        application::CapturePreviewService capturePreviewService(
+            captureRunRepository,
+            frameRepository);
         MainWindow window(
             sessionService,
             captureConfigurationService,
             simulatedCamera,
             dataDirectory,
-            &sessionRecoveryService);
+            &sessionRecoveryService,
+            &capturePreviewService);
         window.show();
         return application.exec();
     } catch (const std::exception& error) {

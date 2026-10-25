@@ -276,6 +276,11 @@ void CaptureWorker::execute()
                             details += QStringLiteral(" de %1").arg(*transfer.totalBytes);
                         }
                     }
+                    if (progress.currentFrame->state == domain::FrameState::Completed
+                        && progress.currentFrame->filePath) {
+                        emit previewAvailable(QString::fromStdString(
+                            progress.currentFrame->filePath->string()));
+                    }
                     if (progress.currentFrame->state == domain::FrameState::Failed) {
                         ++failedCount;
                         emitStatistics();

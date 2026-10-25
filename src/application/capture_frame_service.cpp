@@ -451,7 +451,8 @@ domain::Frame CaptureFrameService::execute(
                     progress(CaptureFrameProgress{
                         frame.id(),
                         frame.state(),
-                        transferProgress
+                        transferProgress,
+                        frame.filePath()
                     });
                 }
             });
@@ -621,7 +622,11 @@ void CaptureFrameService::reportState(
     try {
         loggingService_.log(event);
         if (progress) {
-            progress(CaptureFrameProgress{frame.id(), frame.state(), std::nullopt});
+            progress(CaptureFrameProgress{
+                frame.id(),
+                frame.state(),
+                std::nullopt,
+                frame.filePath()});
         }
     } catch (...) {
         pauseCaptureRun();
@@ -672,7 +677,11 @@ void CaptureFrameService::reportState(
     event.captureSettings = captureRun_.settings();
     loggingService_.log(event);
     if (progress) {
-        progress(CaptureFrameProgress{frame.id(), frame.state(), std::nullopt});
+        progress(CaptureFrameProgress{
+            frame.id(),
+            frame.state(),
+            std::nullopt,
+            frame.filePath()});
     }
     throw CaptureFrameError(
         stage,

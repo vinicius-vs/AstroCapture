@@ -62,6 +62,7 @@ struct CaptureFrameProgress
     domain::FrameId frameId;
     domain::FrameState state;
     std::optional<domain::TransferProgress> transfer;
+    std::optional<std::filesystem::path> filePath;
 };
 
 using CaptureFrameProgressCallback = std::function<void(const CaptureFrameProgress&)>;

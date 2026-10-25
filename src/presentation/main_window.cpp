@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include "application/capture_configuration_service.h"
+#include "application/capture_preview_service.h"
 #include "application/session_recovery_service.h"
 #include "application/session_service.h"
 #include "app/application_metadata.h"
@@ -15,11 +16,14 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QFutureWatcher>
 #include <QFrame>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QImage>
+#include <QImageReader>
 #include <QListView>
 #include <QListWidget>
 #include <QLinearGradient>
@@ -28,6 +32,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPalette>
+#include <QPixmap>
 #include <QPushButton>
 #include <QProgressBar>
 #include <QRadialGradient>
@@ -42,6 +47,8 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
 #include <chrono>
@@ -336,6 +343,7 @@ MainWindow::MainWindow(
     domain::ICamera& camera,
     QString applicationDataDirectory,
     application::SessionRecoveryService* sessionRecoveryService,
+    application::CapturePreviewService* capturePreviewService,
     QWidget* parent)
     : QMainWindow(parent)
     , sessionService_(sessionService)
@@ -343,12 +351,14 @@ MainWindow::MainWindow(
     , camera_(camera)
     , applicationDataDirectory_(std::move(applicationDataDirectory))
     , sessionRecoveryService_(sessionRecoveryService)
+    , capturePreviewService_(capturePreviewService)
 {
     setWindowTitle(applicationTitle());
     resize(1440, 900);
 
     auto* shell = new ResizeAwareWidget(this);
     shell->setObjectName(QStringLiteral("applicationShell"));
+    shell->setMinimumWidth(0);
     shell->setStyleSheet(QString::fromLatin1(DashboardStyle));
 
     auto* shellLayout = new QHBoxLayout(shell);
@@ -428,6 +438,7 @@ MainWindow::MainWindow(
 
     pages_ = new QStackedWidget(shell);
     pages_->setObjectName(QStringLiteral("mainPages"));
+    pages_->setMinimumWidth(0);
     homePage_ = createHomePage();
     sessionsPage_ = createSessionsPage();
     pages_->addWidget(homePage_);
@@ -503,6 +514,8 @@ QWidget* MainWindow::createHomePage()
 {
     auto* scroll = new ResponsiveHomeScrollArea(this);
     scroll->setObjectName(QStringLiteral("homePage"));
+    scroll->setMinimumWidth(0);
+    scroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -515,6 +528,8 @@ QWidget* MainWindow::createHomePage()
 
     auto* page = new QWidget(scroll);
     page->setObjectName(QStringLiteral("homeContent"));
+    page->setMinimumWidth(0);
+    page->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     page->setAutoFillBackground(true);
     QPalette pagePalette = page->palette();
     pagePalette.setColor(QPalette::Window, QColor(QStringLiteral("#050d13")));
@@ -994,6 +1009,7 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
         return;
     }
 
+    ++previewRequestId_;
     if (captureConfigurationPage_) {
         pages_->removeWidget(captureConfigurationPage_);
         delete captureConfigurationPage_;
@@ -1188,6 +1204,27 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
     captureStatisticsLabel_->setWordWrap(true);
     layout->addWidget(captureStatisticsLabel_);
 
+    layout->addWidget(makeTextLabel(
+        QStringLiteral("Último quadro concluído"),
+        QStringLiteral("sectionTitle"),
+        page));
+    capturePreviewImageLabel_ = new QLabel(page);
+    capturePreviewImageLabel_->setObjectName(QStringLiteral("capturePreviewImage"));
+    capturePreviewImageLabel_->setAlignment(Qt::AlignCenter);
+    capturePreviewImageLabel_->setMinimumHeight(220);
+    capturePreviewImageLabel_->setMaximumHeight(400);
+    capturePreviewImageLabel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    capturePreviewImageLabel_->setStyleSheet(
+        QStringLiteral("QLabel { background:#071119; border:1px solid #263943; }"));
+    layout->addWidget(capturePreviewImageLabel_);
+    capturePreviewStatusLabel_ = makeTextLabel(
+        QStringLiteral("Nenhuma imagem disponível."),
+        QStringLiteral("capturePreviewStatus"),
+        page);
+    capturePreviewStatusLabel_->setAlignment(Qt::AlignCenter);
+    capturePreviewStatusLabel_->setWordWrap(true);
+    layout->addWidget(capturePreviewStatusLabel_);
+
     auto* buttons = new QDialogButtonBox(page);
     auto* startButton = buttons->addButton(
         QStringLiteral("Iniciar captura"),
@@ -1249,6 +1286,82 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
     setNavigationSelection(returnHome);
     pages_->addWidget(scroll);
     pages_->setCurrentWidget(scroll);
+    QTimer::singleShot(0, this, [this, sessionId] {
+        loadCapturePreview(sessionId);
+    });
+}
+
+void MainWindow::loadCapturePreview(const std::string& sessionId)
+{
+    if (!capturePreviewService_) {
+        capturePreviewImageLabel_->clear();
+        capturePreviewStatusLabel_->setText(QStringLiteral("Nenhuma imagem disponível."));
+        return;
+    }
+
+    try {
+        const auto imagePath = capturePreviewService_->latestCompletedImagePath(sessionId);
+        if (!imagePath) {
+            ++previewRequestId_;
+            capturePreviewImageLabel_->clear();
+            capturePreviewStatusLabel_->setText(QStringLiteral("Nenhuma imagem disponível."));
+            return;
+        }
+        decodeCapturePreview(QString::fromStdString(imagePath->string()));
+    } catch (const std::exception& error) {
+        ++previewRequestId_;
+        capturePreviewImageLabel_->clear();
+        capturePreviewStatusLabel_->setText(
+            QStringLiteral("Não foi possível localizar a pré-visualização: %1")
+                .arg(QString::fromUtf8(error.what())));
+    }
+}
+
+void MainWindow::decodeCapturePreview(const QString& imagePath)
+{
+    const quint64 requestId = ++previewRequestId_;
+    capturePreviewImageLabel_->clear();
+    capturePreviewStatusLabel_->setText(QStringLiteral("Carregando pré-visualização…"));
+
+    auto* watcher = new QFutureWatcher<QImage>(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished, this,
+            [this, watcher, requestId] {
+        const QImage image = watcher->result();
+        watcher->deleteLater();
+        if (requestId != previewRequestId_) {
+            return;
+        }
+        if (image.isNull()) {
+            capturePreviewImageLabel_->clear();
+            capturePreviewStatusLabel_->setText(
+                QStringLiteral("Pré-visualização indisponível: arquivo inválido ou formato não suportado."));
+            return;
+        }
+        capturePreviewImageLabel_->setPixmap(QPixmap::fromImage(image).scaled(
+            QSize(960, 640),
+            Qt::KeepAspectRatio,
+            Qt::SmoothTransformation));
+        capturePreviewStatusLabel_->setText(QStringLiteral("Último quadro concluído."));
+    });
+    watcher->setFuture(QtConcurrent::run([imagePath] {
+        QImageReader reader(imagePath);
+        reader.setAutoTransform(true);
+        const QSize sourceSize = reader.size();
+        if (sourceSize.isValid()) {
+            reader.setScaledSize(sourceSize.scaled(QSize(1280, 960), Qt::KeepAspectRatio));
+        }
+        QImage image = reader.read();
+        if (image.isNull()) {
+            return QImage{};
+        }
+        if (image.width() > 1280 || image.height() > 960) {
+            image = image.scaled(
+                QSize(1280, 960),
+                Qt::KeepAspectRatio,
+                Qt::SmoothTransformation);
+        }
+        return image;
+    }));
 }
 
 void MainWindow::startCapture(domain::CaptureRun captureRun)
@@ -1329,6 +1442,14 @@ void MainWindow::startCapture(domain::CaptureRun captureRun)
         this,
         [this](const QString& details) {
             captureStatisticsLabel_->setText(details);
+        },
+        Qt::QueuedConnection);
+    connect(
+        worker,
+        &presentation::CaptureWorker::previewAvailable,
+        this,
+        [this](const QString& imagePath) {
+            decodeCapturePreview(imagePath);
         },
         Qt::QueuedConnection);
     connect(
