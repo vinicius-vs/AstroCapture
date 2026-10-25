@@ -12,11 +12,15 @@ CaptureSequenceService::CaptureSequenceService(
     CaptureFrameService& captureFrameService,
     domain::CaptureRunRepository& captureRunRepository,
     domain::FrameRepository& frameRepository,
-    domain::CaptureRun& captureRun)
+    domain::CaptureRun& captureRun,
+    std::shared_ptr<std::atomic_bool> stopRequested)
     : captureFrameService_(captureFrameService)
     , captureRunRepository_(captureRunRepository)
     , frameRepository_(frameRepository)
     , captureRun_(captureRun)
+    , stopRequested_(stopRequested
+          ? std::move(stopRequested)
+          : std::make_shared<std::atomic_bool>(false))
 {
 }
 
@@ -125,7 +129,7 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
                         reportProgress(completedCount, frameProgress);
                     },
                     [this] {
-                        return stopRequested_.load();
+                        return stopRequested_->load();
                     });
                 if (frame.state() == domain::FrameState::Completed) {
                     completedFrames.push_back(frame);
@@ -147,16 +151,16 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
         };
 
         for (const domain::FrameId& frameId : pendingFrameIds) {
-            if (stopRequested_.load()) {
+            if (stopRequested_->load()) {
                 break;
             }
             executeFrame(frameId);
-            if (stopRequested_.load()) {
+            if (stopRequested_->load()) {
                 break;
             }
         }
 
-        while (!stopRequested_.load()
+        while (!stopRequested_->load()
                && (!finite || completedCount < *plannedFrameCount)) {
             domain::FrameId frameId;
             if (retryableFrameId_
@@ -171,7 +175,7 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
             executeFrame(frameId);
         }
 
-        if (stopRequested_.load()) {
+        if (stopRequested_->load()) {
             if (captureRun_.state() == domain::CaptureRunState::Running) {
                 captureRunRepository_.updateState(
                     captureRun_.id(),
@@ -184,7 +188,7 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
                     domain::CaptureRunState::Paused);
                 captureRun_.pause();
             }
-            stopRequested_.store(false);
+            stopRequested_->store(false);
         } else if (finite) {
             captureRunRepository_.updateState(
                 captureRun_.id(),
@@ -209,7 +213,7 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
 
 void CaptureSequenceService::requestStop() noexcept
 {
-    stopRequested_.store(true);
+    stopRequested_->store(true);
 }
 
 } // namespace application

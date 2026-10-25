@@ -52,7 +52,11 @@ int main(int argc, char* argv[])
             sessionRepository,
             captureRunRepository,
             simulatedCamera);
-        MainWindow window(sessionService, captureConfigurationService);
+        MainWindow window(
+            sessionService,
+            captureConfigurationService,
+            simulatedCamera,
+            dataDirectory);
         window.show();
         return application.exec();
     } catch (const std::exception& error) {

@@ -3,11 +3,13 @@
 #include "application/capture_configuration_service.h"
 #include "application/session_service.h"
 #include "app/application_metadata.h"
+#include "presentation/capture_worker.h"
 
 #include <QComboBox>
 #include <QColor>
 #include <QAbstractItemView>
 #include <QBoxLayout>
+#include <QCloseEvent>
 #include <QGridLayout>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -26,6 +28,7 @@
 #include <QPainter>
 #include <QPalette>
 #include <QPushButton>
+#include <QProgressBar>
 #include <QRadialGradient>
 #include <QResizeEvent>
 #include <QScrollArea>
@@ -33,6 +36,8 @@
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStyle>
+#include <QThread>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -327,10 +332,14 @@ public:
 MainWindow::MainWindow(
     application::SessionService& sessionService,
     application::CaptureConfigurationService& captureConfigurationService,
+    domain::ICamera& camera,
+    QString applicationDataDirectory,
     QWidget* parent)
     : QMainWindow(parent)
     , sessionService_(sessionService)
     , captureConfigurationService_(captureConfigurationService)
+    , camera_(camera)
+    , applicationDataDirectory_(std::move(applicationDataDirectory))
 {
     setWindowTitle(applicationTitle());
     resize(1440, 900);
@@ -457,7 +466,23 @@ MainWindow::MainWindow(
                                      "QPushButton[active=\"true\"] { background:#0c2928; color:#42e4b3; }"
                                      "QPushButton:hover { background:#0c2928; color:#42e4b3; }"));
         }
+
     });
+}
+
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    if (captureThread_ && captureThread_->isRunning()) {
+        closeAfterCapture_ = true;
+        requestCaptureStop();
+        if (captureStatusLabel_) {
+            captureStatusLabel_->setText(
+                QStringLiteral("Aguardando o quadro atual terminar antes de fechar."));
+        }
+        event->ignore();
+        return;
+    }
+    event->accept();
 }
 
 QWidget* MainWindow::createHomePage()
@@ -1113,31 +1138,52 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
     errorLabel->setStyleSheet(QStringLiteral("color:#ff8e8e;"));
     layout->addWidget(errorLabel);
 
-    auto* statusLabel = makeTextLabel({}, QStringLiteral("captureConfigurationStatus"), page);
-    statusLabel->setWordWrap(true);
-    statusLabel->setStyleSheet(QStringLiteral("color:#49e3b6;"));
-    layout->addWidget(statusLabel);
+    captureStatusLabel_ = makeTextLabel(
+        {},
+        QStringLiteral("captureConfigurationStatus"),
+        page);
+    captureStatusLabel_->setWordWrap(true);
+    captureStatusLabel_->setStyleSheet(QStringLiteral("color:#49e3b6;"));
+    layout->addWidget(captureStatusLabel_);
+
+    captureProgressBar_ = new QProgressBar(page);
+    captureProgressBar_->setObjectName(QStringLiteral("captureProgressBar"));
+    captureProgressBar_->setRange(0, 1);
+    captureProgressBar_->setValue(0);
+    captureProgressBar_->setTextVisible(true);
+    captureProgressBar_->setFormat(QStringLiteral("%v / %m quadros"));
+    captureProgressBar_->hide();
+    layout->addWidget(captureProgressBar_);
 
     auto* buttons = new QDialogButtonBox(page);
     auto* startButton = buttons->addButton(
-        QStringLiteral("Preparar sequência"),
+        QStringLiteral("Iniciar captura"),
         QDialogButtonBox::AcceptRole);
-    startButton->setObjectName(QStringLiteral("prepareCaptureButton"));
+    startButton->setObjectName(QStringLiteral("startCaptureButton"));
+    captureStartButton_ = startButton;
     startButton->setEnabled(exposureAvailable);
-    auto* backButton = buttons->addButton(QDialogButtonBox::Cancel);
-    backButton->setText(QStringLiteral("Voltar"));
-    backButton->setObjectName(QStringLiteral("captureBackButton"));
-    connect(backButton, &QPushButton::clicked, this, [this, returnHome] {
+    captureBackButton_ = buttons->addButton(QDialogButtonBox::Cancel);
+    captureBackButton_->setText(QStringLiteral("Voltar"));
+    captureBackButton_->setObjectName(QStringLiteral("captureBackButton"));
+    captureStopButton_ = buttons->addButton(
+        QStringLiteral("Parar após o quadro atual"),
+        QDialogButtonBox::ActionRole);
+    captureStopButton_->setObjectName(QStringLiteral("stopCaptureButton"));
+    captureStopButton_->hide();
+    connect(captureStopButton_, &QPushButton::clicked, this, [this] {
+        requestCaptureStop();
+    });
+    connect(captureBackButton_, &QPushButton::clicked, this, [this, returnHome] {
         if (returnHome) {
             showHomePage();
         } else {
             showSessionsPage();
         }
     });
-    connect(startButton, &QPushButton::clicked, page, [this, sessionId, statusLabel,
+    connect(startButton, &QPushButton::clicked, page, [this, sessionId,
                        frameTypeInput, modeInput, exposureInput, isoInput, countInput, errorLabel] {
         errorLabel->clear();
-        statusLabel->clear();
+        captureStatusLabel_->clear();
         try {
             const auto frameType = static_cast<domain::FrameType>(frameTypeInput->currentData().toInt());
             const auto mode = static_cast<domain::CaptureMode>(modeInput->currentData().toInt());
@@ -1159,9 +1205,7 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
                 plannedCount};
             const auto captureRun = captureConfigurationService_.configureSequence(sessionId, settings);
             errorLabel->clear();
-            statusLabel->setText(
-                QStringLiteral("Sequência válida criada (%1). A execução será feita pelo motor de captura.")
-                    .arg(QString::fromStdString(captureRun.id())));
+            startCapture(captureRun);
         } catch (const std::exception& error) {
             errorLabel->setText(QString::fromUtf8(error.what()));
         }
@@ -1172,6 +1216,115 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
     setNavigationSelection(returnHome);
     pages_->addWidget(scroll);
     pages_->setCurrentWidget(scroll);
+}
+
+void MainWindow::startCapture(domain::CaptureRun captureRun)
+{
+    if (captureThread_ && captureThread_->isRunning()) {
+        throw std::logic_error("A capture sequence is already running");
+    }
+
+    captureStopRequested_ = std::make_shared<std::atomic_bool>(false);
+    auto* worker = new presentation::CaptureWorker(
+        applicationDataDirectory_,
+        camera_,
+        std::move(captureRun),
+        captureStopRequested_);
+    auto* thread = new QThread(this);
+    thread->setObjectName(QStringLiteral("captureExecutionThread"));
+    captureThread_ = thread;
+
+    worker->moveToThread(thread);
+    connect(thread, &QThread::started, worker, &presentation::CaptureWorker::execute);
+    connect(
+        worker,
+        &presentation::CaptureWorker::progressChanged,
+        this,
+        [this](quint32 completed, quint32 planned, const QString& details) {
+            if (planned == 0) {
+                captureProgressBar_->setRange(0, 0);
+                captureProgressBar_->setFormat(
+                    QStringLiteral("%1 quadros · contínua").arg(completed));
+            } else {
+                captureProgressBar_->setRange(0, static_cast<int>(planned));
+                captureProgressBar_->setValue(static_cast<int>(completed));
+                captureProgressBar_->setFormat(
+                    QStringLiteral("%1 / %2 quadros")
+                        .arg(completed)
+                        .arg(planned));
+            }
+            captureStatusLabel_->setText(details);
+        },
+        Qt::QueuedConnection);
+    connect(
+        worker,
+        &presentation::CaptureWorker::captureCompleted,
+        this,
+        [this](quint32 completed, bool paused) {
+            captureStatusLabel_->setText(
+                paused
+                    ? QStringLiteral("Captura pausada · %1 quadros concluídos.").arg(completed)
+                    : QStringLiteral("Captura concluída · %1 quadros salvos.").arg(completed));
+        },
+        Qt::QueuedConnection);
+    connect(
+        worker,
+        &presentation::CaptureWorker::captureFailed,
+        this,
+        [this](const QString& message) {
+            captureStatusLabel_->setStyleSheet(QStringLiteral("color:#ff8e8e;"));
+            captureStatusLabel_->setText(
+                QStringLiteral("A captura foi interrompida: %1").arg(message));
+        },
+        Qt::QueuedConnection);
+    connect(
+        worker,
+        &presentation::CaptureWorker::finished,
+        thread,
+        &QThread::quit,
+        Qt::DirectConnection);
+    connect(thread, &QThread::finished, worker, &QObject::deleteLater);
+    connect(thread, &QThread::finished, this, [this, thread] {
+        if (captureThread_ == thread) {
+            captureThread_ = nullptr;
+        }
+        thread->deleteLater();
+        captureStartButton_->setEnabled(true);
+        captureBackButton_->setEnabled(true);
+        captureStopButton_->setEnabled(false);
+        captureStopButton_->hide();
+        captureProgressBar_->show();
+        homeNavigationButton_->setEnabled(true);
+        libraryNavigationButton_->setEnabled(true);
+        captureStopRequested_.reset();
+        if (closeAfterCapture_) {
+            QTimer::singleShot(0, this, &QWidget::close);
+        }
+    });
+
+    captureStatusLabel_->setStyleSheet(QStringLiteral("color:#49e3b6;"));
+    captureStatusLabel_->setText(QStringLiteral("Iniciando captura…"));
+    captureProgressBar_->setRange(0, 0);
+    captureProgressBar_->setFormat(QStringLiteral("Preparando sequência…"));
+    captureProgressBar_->show();
+    captureStartButton_->setEnabled(false);
+    captureBackButton_->setEnabled(false);
+    captureStopButton_->setEnabled(true);
+    captureStopButton_->show();
+    homeNavigationButton_->setEnabled(false);
+    libraryNavigationButton_->setEnabled(false);
+    thread->start();
+}
+
+void MainWindow::requestCaptureStop()
+{
+    if (!captureStopRequested_) {
+        return;
+    }
+    captureStopRequested_->store(true);
+    captureStopButton_->setEnabled(false);
+    captureStatusLabel_->setText(
+        QStringLiteral("Parada solicitada; o quadro em andamento será concluído."));
 }
 
 void MainWindow::openSession(const std::string& sessionId)

@@ -5,6 +5,7 @@
 #include "infrastructure/persistence/sqlite_database.h"
 #include "infrastructure/persistence/sqlite_repositories.h"
 #include "infrastructure/storage/storage_layout.h"
+#include "presentation/capture_worker.h"
 #include "presentation/main_window.h"
 
 #include <QtTest>
@@ -25,10 +26,12 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSignalSpy>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimer>
 #include <QToolButton>
 
@@ -53,7 +56,7 @@ private slots:
         application::SessionService service(repository, storageLayout);
         application::CaptureConfigurationService captureConfigurationService(
             repository, captureRunRepository, camera);
-        MainWindow window(service, captureConfigurationService);
+        MainWindow window(service, captureConfigurationService, camera, directory.path());
         QCOMPARE(window.windowTitle(), applicationTitle());
 
         const auto* welcomeTitle = window.findChild<QLabel*>(QStringLiteral("welcomeTitle"));
@@ -74,6 +77,96 @@ private slots:
         QVERIFY(window.isHidden());
     }
 
+    void captureWorkerKeepsUiResponsiveAndStopsAtFrameBoundary()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        infrastructure::SqliteDatabase database(
+            QDir(directory.path()).filePath(QStringLiteral("astrocapture.sqlite3")));
+        database.open();
+        infrastructure::SqliteSessionRepository sessionRepository(database);
+        infrastructure::SqliteCaptureRunRepository captureRunRepository(database);
+        infrastructure::SqliteFrameRepository frameRepository(database);
+        infrastructure::StorageLayout storageLayout(
+            QDir(directory.path()).filePath(QStringLiteral("images")));
+        application::SessionService sessionService(sessionRepository, storageLayout);
+        const auto session = sessionService.createSession(
+            QStringLiteral("M42"),
+            QStringLiteral("Worker test"),
+            domain::SessionStage::Capture);
+
+        infrastructure::SimulatedCameraOptions cameraOptions;
+        cameraOptions.exposureDelay = std::chrono::milliseconds{250};
+        infrastructure::SimulatedCamera camera(cameraOptions);
+        application::CaptureConfigurationService configurationService(
+            sessionRepository,
+            captureRunRepository,
+            camera);
+        const domain::CaptureRun captureRun = configurationService.configureSequence(
+            session.session.id(),
+            domain::CaptureSettings{
+                domain::FrameType::Light,
+                std::chrono::milliseconds{10},
+                800,
+                domain::CaptureMode::Continuous,
+                std::nullopt});
+
+        auto stopRequested = std::make_shared<std::atomic_bool>(false);
+        auto* worker = new presentation::CaptureWorker(
+            directory.path(),
+            camera,
+            captureRun,
+            stopRequested);
+        QThread thread;
+        worker->moveToThread(&thread);
+
+        QSignalSpy completedSpy(worker, &presentation::CaptureWorker::captureCompleted);
+        QSignalSpy failedSpy(worker, &presentation::CaptureWorker::captureFailed);
+        QSignalSpy threadFinishedSpy(&thread, &QThread::finished);
+        QTimer heartbeat;
+        heartbeat.setInterval(10);
+        int heartbeatCount = 0;
+        connect(&heartbeat, &QTimer::timeout, this, [&heartbeatCount] {
+            ++heartbeatCount;
+        });
+        connect(&thread, &QThread::started, worker, &presentation::CaptureWorker::execute);
+        connect(
+            worker,
+            &presentation::CaptureWorker::progressChanged,
+            this,
+            [stopRequested](quint32, quint32, const QString& details) {
+                if (details.contains(QStringLiteral("Expondo"))) {
+                    stopRequested->store(true);
+                }
+            },
+            Qt::QueuedConnection);
+        connect(
+            worker,
+            &presentation::CaptureWorker::finished,
+            &thread,
+            &QThread::quit,
+            Qt::DirectConnection);
+        connect(&thread, &QThread::finished, worker, &QObject::deleteLater);
+
+        heartbeat.start();
+        thread.start();
+        QTRY_VERIFY_WITH_TIMEOUT(threadFinishedSpy.count() > 0, 3000);
+        thread.wait();
+        heartbeat.stop();
+
+        QVERIFY2(failedSpy.isEmpty(), failedSpy.isEmpty() ? "" : qPrintable(failedSpy.first().first().toString()));
+        QCOMPARE(completedSpy.count(), 1);
+        QCOMPARE(completedSpy.first().at(0).toUInt(), 1U);
+        QCOMPARE(completedSpy.first().at(1).toBool(), true);
+        QVERIFY(heartbeatCount > 0);
+        const auto frames = frameRepository.findByCaptureRunId(captureRun.id());
+        QCOMPARE(frames.size(), std::size_t{1});
+        QCOMPARE(frames.front().state(), domain::FrameState::Completed);
+        const auto persistedRun = captureRunRepository.findById(captureRun.id());
+        QVERIFY(persistedRun);
+        QCOMPARE(persistedRun->state(), domain::CaptureRunState::Paused);
+    }
+
     void homeScreenAdaptsToNarrowWindowWidths()
     {
         QTemporaryDir directory;
@@ -89,7 +182,7 @@ private slots:
         application::SessionService service(repository, storageLayout);
         application::CaptureConfigurationService captureConfigurationService(
             repository, captureRunRepository, camera);
-        MainWindow window(service, captureConfigurationService);
+        MainWindow window(service, captureConfigurationService, camera, directory.path());
 
         auto* sidebar = window.findChild<QFrame*>(QStringLiteral("sidebar"));
         auto* homePage = window.findChild<QScrollArea*>(QStringLiteral("homePage"));
@@ -175,7 +268,7 @@ private slots:
             domain::SessionStage::Stacking);
         application::CaptureConfigurationService captureConfigurationService(
             repository, captureRunRepository, camera);
-        MainWindow window(service, captureConfigurationService);
+        MainWindow window(service, captureConfigurationService, camera, directory.path());
 
         auto* libraryNavigation =
             window.findChild<QPushButton*>(QStringLiteral("libraryNavigationButton"));
@@ -265,7 +358,7 @@ private slots:
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         infrastructure::SqliteDatabase database(
-            QDir(directory.path()).filePath(QStringLiteral("test.sqlite3")));
+            QDir(directory.path()).filePath(QStringLiteral("astrocapture.sqlite3")));
         database.open();
         infrastructure::SqliteSessionRepository repository(database);
         infrastructure::SqliteCaptureRunRepository captureRunRepository(database);
@@ -276,7 +369,7 @@ private slots:
         application::SessionService service(repository, storageLayout);
         application::CaptureConfigurationService captureConfigurationService(
             repository, captureRunRepository, camera);
-        MainWindow window(service, captureConfigurationService);
+        MainWindow window(service, captureConfigurationService, camera, directory.path());
         auto* startAction = window.findChild<QPushButton*>(QStringLiteral("startCaptureAction"));
         QVERIFY(startAction);
 
@@ -325,7 +418,7 @@ private slots:
         auto* exposureInput = capturePage->findChild<QDoubleSpinBox*>(QStringLiteral("exposureInput"));
         auto* isoInput = capturePage->findChild<QComboBox*>(QStringLiteral("isoInput"));
         auto* countInput = capturePage->findChild<QSpinBox*>(QStringLiteral("frameCountInput"));
-        auto* prepareButton = capturePage->findChild<QPushButton*>(QStringLiteral("prepareCaptureButton"));
+        auto* prepareButton = capturePage->findChild<QPushButton*>(QStringLiteral("startCaptureButton"));
         QVERIFY(cameraInput);
         QCOMPARE(cameraInput->count(), 2);
         auto* cameraModel = qobject_cast<QStandardItemModel*>(cameraInput->model());
@@ -345,9 +438,18 @@ private slots:
         isoInput->setCurrentIndex(isoInput->findData(800u));
         countInput->setValue(3);
         prepareButton->click();
-        QVERIFY(capturePage->findChild<QLabel*>(
-            QStringLiteral("captureConfigurationStatus"))->text().contains(
-                QStringLiteral("motor de captura")));
+        auto* captureStatus =
+            capturePage->findChild<QLabel*>(QStringLiteral("captureConfigurationStatus"));
+        QVERIFY(captureStatus);
+        QTRY_VERIFY2_WITH_TIMEOUT(
+            captureStatus->text().contains(QStringLiteral("Captura concluída")),
+            qPrintable(captureStatus->text()),
+            3000);
+        QTRY_VERIFY_WITH_TIMEOUT([&window] {
+            auto* thread = window.findChild<QThread*>(
+                QStringLiteral("captureExecutionThread"));
+            return !thread || !thread->isRunning();
+        }(), 3000);
 
         const auto sessions = repository.findAll();
         QCOMPARE(sessions.size(), std::size_t{1});
@@ -370,6 +472,7 @@ private slots:
                     1u}),
             std::invalid_argument);
         QCOMPARE(captureRunRepository.findBySessionId(sessions.front().session.id()).size(), std::size_t{1});
+        window.close();
     }
 };
 QTEST_MAIN(ApplicationMetadataTest)

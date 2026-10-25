@@ -44,6 +44,8 @@ add_executable(astrocapture
     src/infrastructure/storage/storage_layout.h
     src/infrastructure/storage/image_storage.cpp
     src/infrastructure/storage/image_storage.h
+    src/presentation/capture_worker.cpp
+    src/presentation/capture_worker.h
     src/presentation/main_window.cpp
     src/presentation/main_window.h
 )
@@ -66,6 +68,10 @@ if(BUILD_TESTING)
     add_executable(astrocapture_tests
         src/application/capture_configuration_service.cpp
         src/application/capture_configuration_service.h
+        src/application/capture_frame_service.cpp
+        src/application/capture_frame_service.h
+        src/application/capture_sequence_service.cpp
+        src/application/capture_sequence_service.h
         src/application/session_service.cpp
         src/application/session_service.h
         src/domain/camera.h
@@ -82,6 +88,12 @@ if(BUILD_TESTING)
         src/infrastructure/persistence/sqlite_repositories.h
         src/infrastructure/storage/storage_layout.cpp
         src/infrastructure/storage/storage_layout.h
+        src/infrastructure/storage/image_storage.cpp
+        src/infrastructure/storage/image_storage.h
+        src/infrastructure/logging/json_lines_logging_service.cpp
+        src/infrastructure/logging/json_lines_logging_service.h
+        src/presentation/capture_worker.cpp
+        src/presentation/capture_worker.h
         src/presentation/main_window.cpp
         src/presentation/main_window.h
         tests/unit/test_application_metadata.cpp

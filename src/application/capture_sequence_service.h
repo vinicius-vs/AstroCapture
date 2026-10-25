@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -30,7 +31,8 @@ public:
         CaptureFrameService& captureFrameService,
         domain::CaptureRunRepository& captureRunRepository,
         domain::FrameRepository& frameRepository,
-        domain::CaptureRun& captureRun);
+        domain::CaptureRun& captureRun,
+        std::shared_ptr<std::atomic_bool> stopRequested = {});
 
     std::vector<domain::Frame> execute(
         CaptureSequenceProgressCallback progress = {});
@@ -42,7 +44,7 @@ private:
     domain::FrameRepository& frameRepository_;
     domain::CaptureRun& captureRun_;
     std::optional<domain::FrameId> retryableFrameId_;
-    std::atomic_bool stopRequested_{false};
+    std::shared_ptr<std::atomic_bool> stopRequested_;
     std::atomic_bool executing_{false};
 };
 
