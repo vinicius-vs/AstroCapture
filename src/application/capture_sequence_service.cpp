@@ -23,22 +23,40 @@ CaptureSequenceService::CaptureSequenceService(
 std::vector<domain::Frame> CaptureSequenceService::execute(
     CaptureSequenceProgressCallback progress)
 {
+    bool expectedToBeExecuting = false;
+    if (!executing_.compare_exchange_strong(expectedToBeExecuting, true)) {
+        throw std::logic_error("Capture sequence is already executing");
+    }
+    struct ExecutionGuard final
+    {
+        std::atomic_bool& executing;
+        ~ExecutionGuard()
+        {
+            executing.store(false);
+        }
+    } executionGuard{executing_};
+
     const domain::CaptureSettings& settings = captureRun_.settings();
-    if (settings.mode != domain::CaptureMode::Finite
-        || !settings.plannedFrameCount
-        || *settings.plannedFrameCount == 0) {
-        throw std::invalid_argument(
-            "Capture sequences require a finite mode and a positive planned frame count");
+    const bool finite = settings.mode == domain::CaptureMode::Finite;
+    if (finite && (!settings.plannedFrameCount || *settings.plannedFrameCount == 0)) {
+        throw std::invalid_argument("Finite capture sequences require a positive planned count");
     }
     if (captureRun_.state() != domain::CaptureRunState::Ready
-        && captureRun_.state() != domain::CaptureRunState::Running) {
-        throw std::logic_error("Capture run must be Ready or Running to execute a sequence");
+        && captureRun_.state() != domain::CaptureRunState::Running
+        && captureRun_.state() != domain::CaptureRunState::Paused) {
+        throw std::logic_error(
+            "Capture run must be Ready, Running, or safely Paused to execute a sequence");
+    }
+    if (captureRun_.state() == domain::CaptureRunState::Paused
+        && retryableFrameId_) {
+        throw std::logic_error(
+            "A failed pre-exposure attempt requires an explicit recovery decision");
     }
 
-    const std::uint32_t plannedFrameCount = *settings.plannedFrameCount;
+    const std::optional<std::uint32_t> plannedFrameCount = settings.plannedFrameCount;
     std::vector<domain::Frame> existingFrames =
         frameRepository_.findByCaptureRunId(captureRun_.id());
-    if (existingFrames.size() > plannedFrameCount) {
+    if (finite && existingFrames.size() > *plannedFrameCount) {
         throw std::logic_error("Capture run contains more frames than its planned count");
     }
 
@@ -86,6 +104,11 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
             captureRun_.id(),
             domain::CaptureRunState::Running);
         captureRun_.start();
+    } else if (captureRun_.state() == domain::CaptureRunState::Paused) {
+        captureRunRepository_.updateState(
+            captureRun_.id(),
+            domain::CaptureRunState::Running);
+        captureRun_.resume();
     }
 
     try {
@@ -100,8 +123,13 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
                             ++completedCount;
                         }
                         reportProgress(completedCount, frameProgress);
+                    },
+                    [this] {
+                        return stopRequested_.load();
                     });
-                completedFrames.push_back(frame);
+                if (frame.state() == domain::FrameState::Completed) {
+                    completedFrames.push_back(frame);
+                }
                 retryableFrameId_.reset();
             } catch (const CaptureFrameError& error) {
                 retryableFrameId_.reset();
@@ -119,10 +147,17 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
         };
 
         for (const domain::FrameId& frameId : pendingFrameIds) {
+            if (stopRequested_.load()) {
+                break;
+            }
             executeFrame(frameId);
+            if (stopRequested_.load()) {
+                break;
+            }
         }
 
-        while (completedCount < plannedFrameCount) {
+        while (!stopRequested_.load()
+               && (!finite || completedCount < *plannedFrameCount)) {
             domain::FrameId frameId;
             if (retryableFrameId_
                 && !frameRepository_.findById(*retryableFrameId_)) {
@@ -136,10 +171,28 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
             executeFrame(frameId);
         }
 
-        captureRunRepository_.updateState(
-            captureRun_.id(),
-            domain::CaptureRunState::Completed);
-        captureRun_.complete();
+        if (stopRequested_.load()) {
+            if (captureRun_.state() == domain::CaptureRunState::Running) {
+                captureRunRepository_.updateState(
+                    captureRun_.id(),
+                    domain::CaptureRunState::StopRequested);
+                captureRun_.requestStop();
+            }
+            if (captureRun_.state() == domain::CaptureRunState::StopRequested) {
+                captureRunRepository_.updateState(
+                    captureRun_.id(),
+                    domain::CaptureRunState::Paused);
+                captureRun_.pause();
+            }
+            stopRequested_.store(false);
+        } else if (finite) {
+            captureRunRepository_.updateState(
+                captureRun_.id(),
+                domain::CaptureRunState::Completed);
+            captureRun_.complete();
+        } else {
+            throw std::logic_error("Continuous capture ended without a stop request");
+        }
     } catch (...) {
         if (captureRun_.state() == domain::CaptureRunState::Running
             || captureRun_.state() == domain::CaptureRunState::StopRequested) {
@@ -152,6 +205,11 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
     }
 
     return completedFrames;
+}
+
+void CaptureSequenceService::requestStop() noexcept
+{
+    stopRequested_.store(true);
 }
 
 } // namespace application

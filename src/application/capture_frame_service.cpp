@@ -227,7 +227,8 @@ CaptureFrameService::CaptureFrameService(
 
 domain::Frame CaptureFrameService::execute(
     domain::FrameId frameId,
-    CaptureFrameProgressCallback progress)
+    CaptureFrameProgressCallback progress,
+    std::function<bool()> stopBeforeExposure)
 {
     if (captureRun_.state() != CaptureRunState::Running) {
         throw CaptureFrameError(
@@ -330,6 +331,10 @@ domain::Frame CaptureFrameService::execute(
         retryableUnstartedFrames_.erase(frame.id());
     }
 
+    if (stopBeforeExposure && stopBeforeExposure()) {
+        return frame;
+    }
+
     LogEvent attemptEvent;
     attemptEvent.severity = LogSeverity::Info;
     attemptEvent.event = QStringLiteral("capture.frame.attempt_started");
@@ -369,6 +374,10 @@ domain::Frame CaptureFrameService::execute(
             cameraErrorMessage(*cameraError),
             progress,
             *cameraError);
+    }
+
+    if (stopBeforeExposure && stopBeforeExposure()) {
+        return frame;
     }
 
     frame.startExposure(

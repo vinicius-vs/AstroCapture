@@ -250,18 +250,17 @@ O caso de uso da sequência valida o modo e a quantidade planejada, executa cada
 
 ### 8.3 Captura contínua
 
-Na captura contínua, o sistema inicia novos quadros até que o usuário solicite a parada ou ocorra uma condição de erro.
+Na captura contínua, o `CaptureSequenceService` inicia novos quadros até que o usuário solicite a parada ou ocorra uma condição de erro. A solicitação é thread-safe; o serviço a processa nas fronteiras seguras entre quadros e antes de iniciar uma exposição.
 
 Ao solicitar a parada:
 
-1. Marcar a sequência como `StopRequested`.
-2. Não agendar novas exposições.
-3. Permitir que a exposição em andamento termine.
-4. Tentar transferir e salvar o quadro atual.
-5. Registrar o resultado da operação.
-6. Encerrar a sequência em estado apropriado.
+1. Não agendar novos quadros.
+2. Se a exposição do quadro atual já começou, permitir que a câmera conclua a operação normalmente.
+3. Transferir, validar e salvar o quadro atual, registrando seu resultado.
+4. Persistir a transição da sequência por `StopRequested` para `Paused`, que não afirma conclusão e permite retomada.
+5. Se a parada for processada antes da exposição, manter o quadro como `Pending` e não chamar a câmera para capturá-lo.
 
-O sistema não deve presumir que consegue cancelar fisicamente uma exposição já iniciada. A interrupção imediata depende do suporte da câmera.
+Uma falha no quadro em andamento segue a política normal de recuperação e não é reportada como captura concluída. O sistema não presume que consegue cancelar fisicamente uma exposição já iniciada; uma interrupção imediata depende do suporte da câmera.
 
 ## 9. Máquina de estados
 

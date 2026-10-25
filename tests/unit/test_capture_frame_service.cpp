@@ -766,7 +766,7 @@ private slots:
         QVERIFY(fixture.runs.findById("run-1")->state() == CaptureRunState::Paused);
     }
 
-    void continuousRunIsRejectedByFiniteSequenceService()
+    void continuousStopFinishesCurrentFrameAndDoesNotScheduleAnother()
     {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -774,6 +774,7 @@ private slots:
             directory.path(),
             CaptureSettings{FrameType::Light, 5s, 800, CaptureMode::Continuous, std::nullopt});
         SimulatedCamera camera;
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
         RecordingLoggingService logging;
         CaptureFrameService frameService(
             camera,
@@ -790,9 +791,77 @@ private slots:
             fixture.frames,
             fixture.captureRun);
 
-        QVERIFY_EXCEPTION_THROWN(sequenceService.execute(), std::invalid_argument);
-        QCOMPARE(fixture.captureRun.state(), CaptureRunState::Running);
-        QVERIFY(fixture.frames.findByCaptureRunId("run-1").empty());
+        std::vector<CaptureSequenceProgress> progress;
+        const std::vector<Frame> completedFrames = sequenceService.execute(
+            [&sequenceService, &progress](const CaptureSequenceProgress& update) {
+                progress.push_back(update);
+                if (update.currentFrame
+                    && update.currentFrame->state == FrameState::Exposing) {
+                    sequenceService.requestStop();
+                }
+            });
+
+        QCOMPARE(completedFrames.size(), std::size_t{1});
+        QCOMPARE(completedFrames.front().state(), FrameState::Completed);
+        QCOMPARE(fixture.frames.findByCaptureRunId("run-1").size(), std::size_t{1});
+        QCOMPARE(fixture.captureRun.state(), CaptureRunState::Paused);
+        QCOMPARE(fixture.runs.findById("run-1")->state(), CaptureRunState::Paused);
+        QVERIFY(!progress.empty());
+        QVERIFY(!progress.back().plannedFrameCount.has_value());
+        QVERIFY(std::any_of(
+            progress.begin(),
+            progress.end(),
+            [](const CaptureSequenceProgress& update) {
+                return update.currentFrame
+                    && update.currentFrame->state == FrameState::Completed
+                    && update.completedFrames == 1;
+            }));
+    }
+
+    void stopBeforeExposureLeavesFramePendingAndDoesNotCallCamera()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(
+            directory.path(),
+            CaptureSettings{FrameType::Light, 5s, 800, CaptureMode::Continuous, std::nullopt});
+        SimulatedCamera camera;
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
+        RecordingLoggingService logging;
+        CaptureFrameService frameService(
+            camera,
+            fixture.runs,
+            fixture.frames,
+            fixture.imageStorage,
+            logging,
+            fixture.target,
+            fixture.session,
+            fixture.captureRun);
+        CaptureSequenceService sequenceService(
+            frameService,
+            fixture.runs,
+            fixture.frames,
+            fixture.captureRun);
+
+        const std::vector<Frame> completedFrames = sequenceService.execute(
+            [&sequenceService](const CaptureSequenceProgress& update) {
+                if (update.currentFrame
+                    && update.currentFrame->state == FrameState::Pending) {
+                    sequenceService.requestStop();
+                }
+            });
+
+        QVERIFY(completedFrames.empty());
+        const std::vector<Frame> frames = fixture.frames.findByCaptureRunId("run-1");
+        QCOMPARE(frames.size(), std::size_t{1});
+        QCOMPARE(frames.front().state(), FrameState::Pending);
+        QCOMPARE(fixture.captureRun.state(), CaptureRunState::Paused);
+        QVERIFY(std::none_of(
+            logging.events.begin(),
+            logging.events.end(),
+            [](const LogEvent& event) {
+                return event.event == QStringLiteral("capture.frame.attempt_started");
+            }));
     }
 };
 

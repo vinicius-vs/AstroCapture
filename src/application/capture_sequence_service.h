@@ -5,6 +5,7 @@
 #include "domain/repositories/capture_run_repository.h"
 #include "domain/repositories/frame_repository.h"
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -15,7 +16,7 @@ namespace application {
 struct CaptureSequenceProgress
 {
     std::uint32_t completedFrames;
-    std::uint32_t plannedFrameCount;
+    std::optional<std::uint32_t> plannedFrameCount;
     std::optional<CaptureFrameProgress> currentFrame;
 };
 
@@ -33,6 +34,7 @@ public:
 
     std::vector<domain::Frame> execute(
         CaptureSequenceProgressCallback progress = {});
+    void requestStop() noexcept;
 
 private:
     CaptureFrameService& captureFrameService_;
@@ -40,6 +42,8 @@ private:
     domain::FrameRepository& frameRepository_;
     domain::CaptureRun& captureRun_;
     std::optional<domain::FrameId> retryableFrameId_;
+    std::atomic_bool stopRequested_{false};
+    std::atomic_bool executing_{false};
 };
 
 } // namespace application

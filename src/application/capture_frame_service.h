@@ -81,7 +81,8 @@ public:
 
     domain::Frame execute(
         domain::FrameId frameId,
-        CaptureFrameProgressCallback progress = {});
+        CaptureFrameProgressCallback progress = {},
+        std::function<bool()> stopBeforeExposure = {});
     void applyRecoveryDecision(
         const domain::FrameId& frameId,
         CaptureRecoveryDecision decision);
