@@ -622,6 +622,39 @@ std::optional<SessionRecord> SqliteSessionRepository::findById(const SessionId& 
     return findSessionById(database_, id);
 }
 
+std::optional<Target> SqliteSessionRepository::findTargetBySessionId(const SessionId& id) const
+{
+    QSqlQuery query(database_.connection());
+    if (!query.prepare(QStringLiteral(
+            "SELECT targets.id, targets.name FROM targets "
+            "INNER JOIN sessions ON sessions.target_id = targets.id "
+            "WHERE sessions.id = :id"))) {
+        throwQueryError(query, QStringLiteral("Preparing session target query failed"));
+    }
+    query.bindValue(QStringLiteral(":id"), text(id));
+    execute(database_, query, QStringLiteral("Querying session target failed"));
+    if (!next(query, QStringLiteral("Reading session target query result failed"))) {
+        return std::nullopt;
+    }
+    return Target(query.value(0).toString().toStdString(), query.value(1).toString().toStdString());
+}
+
+std::vector<SessionRecord> SqliteSessionRepository::findAll() const
+{
+    QSqlQuery query(database_.connection());
+    if (!query.exec(QStringLiteral(
+            "SELECT id, target_id, name, stage, created_at, updated_at, is_open "
+            "FROM sessions ORDER BY created_at DESC, id"))) {
+        throwQueryError(query, QStringLiteral("Querying all sessions failed"));
+    }
+
+    std::vector<SessionRecord> sessions;
+    while (next(query, QStringLiteral("Reading all sessions result failed"))) {
+        sessions.push_back(sessionRecordFromQuery(query));
+    }
+    return sessions;
+}
+
 std::vector<SessionRecord> SqliteSessionRepository::findByTargetId(const TargetId& targetId) const
 {
     QSqlQuery query(database_.connection());
@@ -638,6 +671,49 @@ std::vector<SessionRecord> SqliteSessionRepository::findByTargetId(const TargetI
         sessions.push_back(sessionRecordFromQuery(query));
     }
     return sessions;
+}
+
+void SqliteSessionRepository::deleteSession(const SessionId& id)
+{
+    QSqlDatabase connection = database_.connection();
+    beginTransaction(connection);
+    try {
+        if (!findSessionById(database_, id)) {
+            throw RepositoryNotFoundError("Session does not exist");
+        }
+
+        QSqlQuery deleteFrames(database_.connection());
+        if (!deleteFrames.prepare(QStringLiteral(
+                "DELETE FROM frames WHERE capture_run_id IN "
+                "(SELECT id FROM capture_runs WHERE session_id = :session_id)"))) {
+            throwQueryError(deleteFrames, QStringLiteral("Preparing session frame deletion failed"));
+        }
+        deleteFrames.bindValue(QStringLiteral(":session_id"), text(id));
+        execute(database_, deleteFrames, QStringLiteral("Deleting session frames failed"));
+
+        QSqlQuery deleteRuns(database_.connection());
+        if (!deleteRuns.prepare(QStringLiteral("DELETE FROM capture_runs WHERE session_id = :session_id"))) {
+            throwQueryError(deleteRuns, QStringLiteral("Preparing session capture deletion failed"));
+        }
+        deleteRuns.bindValue(QStringLiteral(":session_id"), text(id));
+        execute(database_, deleteRuns, QStringLiteral("Deleting session captures failed"));
+
+        QSqlQuery deleteSessionQuery(database_.connection());
+        if (!deleteSessionQuery.prepare(QStringLiteral("DELETE FROM sessions WHERE id = :id"))) {
+            throwQueryError(deleteSessionQuery, QStringLiteral("Preparing session deletion failed"));
+        }
+        deleteSessionQuery.bindValue(QStringLiteral(":id"), text(id));
+        execute(database_, deleteSessionQuery, QStringLiteral("Deleting session failed"));
+        commitTransaction(connection);
+    } catch (const std::exception& error) {
+        const std::string operationError = error.what();
+        try {
+            rollbackTransaction(connection);
+        } catch (const std::exception& rollbackError) {
+            throw RepositoryError(operationError + "; " + rollbackError.what());
+        }
+        throw;
+    }
 }
 
 void SqliteSessionRepository::updateStage(

@@ -14,7 +14,10 @@ public:
 
     void create(const domain::Target& target, const domain::Session& session) override;
     std::optional<domain::SessionRecord> findById(const domain::SessionId& id) const override;
+    std::optional<domain::Target> findTargetBySessionId(const domain::SessionId& id) const override;
+    std::vector<domain::SessionRecord> findAll() const override;
     std::vector<domain::SessionRecord> findByTargetId(const domain::TargetId& targetId) const override;
+    void deleteSession(const domain::SessionId& id) override;
     void updateStage(
         const domain::SessionId& id,
         domain::SessionStage stage,

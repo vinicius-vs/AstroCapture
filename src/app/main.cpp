@@ -1,7 +1,10 @@
 #include "app/application_metadata.h"
+#include "application/session_service.h"
 #include "domain/logging/log_event.h"
 #include "infrastructure/logging/json_lines_logging_service.h"
 #include "infrastructure/persistence/sqlite_database.h"
+#include "infrastructure/persistence/sqlite_repositories.h"
+#include "infrastructure/storage/storage_layout.h"
 #include "presentation/main_window.h"
 
 #include <QApplication>
@@ -37,7 +40,11 @@ int main(int argc, char* argv[])
             QDir(dataDirectory).filePath(QStringLiteral("astrocapture.sqlite3")));
         database.open();
 
-        MainWindow window;
+        infrastructure::SqliteSessionRepository sessionRepository(database);
+        infrastructure::StorageLayout storageLayout(
+            QDir(dataDirectory).filePath(QStringLiteral("images")));
+        application::SessionService sessionService(sessionRepository, storageLayout);
+        MainWindow window(sessionService);
         window.show();
         return application.exec();
     } catch (const std::exception& error) {

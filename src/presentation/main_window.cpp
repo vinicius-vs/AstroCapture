@@ -1,19 +1,944 @@
 #include "main_window.h"
 
+#include "application/session_service.h"
 #include "app/application_metadata.h"
 
+#include <QComboBox>
+#include <QColor>
+#include <QAbstractItemView>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFrame>
+#include <QFormLayout>
+#include <QHBoxLayout>
 #include <QLabel>
-#include <QString>
+#include <QLineEdit>
+#include <QListView>
+#include <QListWidget>
+#include <QLinearGradient>
+#include <QDateTime>
+#include <QMenu>
+#include <QMessageBox>
+#include <QPainter>
+#include <QPalette>
+#include <QPushButton>
+#include <QRadialGradient>
+#include <QScrollArea>
+#include <QStackedWidget>
+#include <QStyle>
+#include <QToolButton>
+#include <QVBoxLayout>
+#include <QWidget>
 
-MainWindow::MainWindow(QWidget* parent)
+#include <algorithm>
+#include <chrono>
+#include <exception>
+#include <tuple>
+#include <vector>
+
+namespace {
+
+constexpr auto DashboardStyle = R"(
+    QWidget#applicationShell {
+        background: #050d13;
+        color: #e5edf3;
+        font-family: "Noto Sans";
+        font-size: 10pt;
+    }
+    QLabel {
+        color: #e5edf3;
+    }
+    QFrame#sidebar, QFrame#statusCard, QFrame#actionCard, QFrame#recentCard {
+        background: #09151d;
+        border: 1px solid #192a34;
+        border-radius: 10px;
+    }
+    QLabel#brandMark {
+        color: #40e0b1;
+        font-size: 18pt;
+        font-weight: 700;
+    }
+    QLabel#brandTagline, QLabel#mutedText, QLabel#statusDetail {
+        color: #91a6b4;
+    }
+    QPushButton#navigationButton {
+        background: transparent;
+        color: #b5c5d0;
+        text-align: left;
+        border: 0;
+        border-radius: 7px;
+        padding: 11px 14px;
+    }
+    QPushButton#navigationButton:hover, QPushButton#navigationButton[active="true"] {
+        background: #0c2928;
+        color: #42e4b3;
+    }
+    QPushButton#navigationButton:disabled {
+        color: #53636d;
+    }
+    QPushButton#primaryAction {
+        background: #0d302d;
+        color: #49e3b6;
+        border: 1px solid #21c99b;
+        border-radius: 7px;
+        padding: 10px 14px;
+        font-weight: 600;
+    }
+    QPushButton#primaryAction:hover {
+        background: #114039;
+    }
+    QPushButton#secondaryAction {
+        background: #0a1720;
+        color: #e5edf3;
+        border: 1px solid #1b303c;
+        border-radius: 7px;
+        padding: 10px 14px;
+    }
+    QPushButton#secondaryAction:hover {
+        border-color: #36c99f;
+        color: #49e3b6;
+    }
+    QLabel#sectionTitle {
+        font-size: 14pt;
+        font-weight: 600;
+    }
+    QLabel#cardTitle {
+        font-size: 11pt;
+        font-weight: 600;
+    }
+    QLineEdit, QComboBox, QListWidget {
+        background: #071119;
+        color: #e5edf3;
+        border: 1px solid #263943;
+        border-radius: 5px;
+        padding: 7px;
+    }
+    QListWidget::item {
+        padding: 8px;
+    }
+    QListWidget::item:selected {
+        background: #0c2928;
+        color: #49e3b6;
+    }
+)";
+
+QString stageName(domain::SessionStage stage)
+{
+    switch (stage) {
+    case domain::SessionStage::Capture:
+        return QStringLiteral("Captura");
+    case domain::SessionStage::Stacking:
+        return QStringLiteral("Empilhamento");
+    case domain::SessionStage::Editing:
+        return QStringLiteral("Edição");
+    case domain::SessionStage::Finished:
+        return QStringLiteral("Finalizada");
+    }
+    return QStringLiteral("Desconhecida");
+}
+
+QFrame* makeCard(const QString& objectName, QWidget* parent)
+{
+    auto* card = new QFrame(parent);
+    card->setObjectName(objectName);
+    return card;
+}
+
+QLabel* makeTextLabel(
+    const QString& text,
+    const QString& objectName,
+    QWidget* parent)
+{
+    auto* label = new QLabel(text, parent);
+    if (!objectName.isEmpty()) {
+        label->setObjectName(objectName);
+    }
+    return label;
+}
+
+class StarfieldBanner final : public QFrame
+{
+public:
+    explicit StarfieldBanner(QWidget* parent = nullptr)
+        : QFrame(parent)
+    {
+        setObjectName(QStringLiteral("welcomeBanner"));
+        setMinimumHeight(245);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    }
+
+protected:
+    void paintEvent(QPaintEvent* event) override
+    {
+        QFrame::paintEvent(event);
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setClipRect(rect());
+
+        QLinearGradient background(rect().topLeft(), rect().bottomRight());
+        background.setColorAt(0.0, QColor(QStringLiteral("#081722")));
+        background.setColorAt(0.55, QColor(QStringLiteral("#07101a")));
+        background.setColorAt(1.0, QColor(QStringLiteral("#10232c")));
+        painter.fillRect(rect(), background);
+
+        const QPointF galaxyCenter(width() * 0.77, height() * 0.55);
+        QRadialGradient galaxy(galaxyCenter, width() * 0.29);
+        galaxy.setColorAt(0.0, QColor(242, 178, 143, 135));
+        galaxy.setColorAt(0.09, QColor(225, 127, 157, 110));
+        galaxy.setColorAt(0.22, QColor(81, 147, 206, 75));
+        galaxy.setColorAt(0.55, QColor(38, 94, 153, 28));
+        galaxy.setColorAt(1.0, QColor(20, 54, 91, 0));
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(galaxy);
+        painter.drawEllipse(
+            galaxyCenter,
+            width() * 0.29,
+            height() * 0.73);
+
+        for (int index = 0; index < 100; ++index) {
+            const int x = (index * 167 + 29) % qMax(1, width());
+            const int y = (index * 97 + 17) % qMax(1, height());
+            const int diameter = index % 13 == 0 ? 3 : 1;
+            const int alpha = 65 + (index * 31) % 150;
+            painter.setBrush(QColor(221, 237, 255, alpha));
+            painter.drawEllipse(QPoint(x, y), diameter, diameter);
+        }
+
+        painter.setPen(QPen(QColor(QStringLiteral("#1b3440")), 1));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 10, 10);
+    }
+};
+
+class DarkComboBox final : public QComboBox
+{
+public:
+    explicit DarkComboBox(QWidget* parent = nullptr)
+        : QComboBox(parent)
+    {
+        auto* listView = new QListView(this);
+        listView->setFrameShape(QFrame::NoFrame);
+        listView->setLineWidth(0);
+        listView->setMidLineWidth(0);
+        listView->setSpacing(0);
+        listView->setStyleSheet(QStringLiteral(
+            "QListView { background:#071119; color:#e5edf3; border:0; outline:0; }"
+            "QListView::item { background:#071119; padding:5px 8px; }"
+            "QListView::item:selected { background:#0c2928; color:#49e3b6; }"));
+        QPalette palette = listView->palette();
+        palette.setColor(QPalette::Base, QColor(QStringLiteral("#071119")));
+        palette.setColor(QPalette::Window, QColor(QStringLiteral("#071119")));
+        palette.setColor(QPalette::Text, QColor(QStringLiteral("#e5edf3")));
+        palette.setColor(QPalette::Highlight, QColor(QStringLiteral("#0c2928")));
+        palette.setColor(QPalette::HighlightedText, QColor(QStringLiteral("#49e3b6")));
+        listView->setPalette(palette);
+        listView->viewport()->setPalette(palette);
+        listView->viewport()->setAutoFillBackground(true);
+        setView(listView);
+    }
+
+    void showPopup() override
+    {
+        QComboBox::showPopup();
+        QWidget* popup = view()->parentWidget();
+        if (auto* popupFrame = qobject_cast<QFrame*>(popup)) {
+            popupFrame->setFrameShape(QFrame::NoFrame);
+            popupFrame->setLineWidth(0);
+            popupFrame->setMidLineWidth(0);
+            popupFrame->setAutoFillBackground(true);
+            QPalette palette = popupFrame->palette();
+            palette.setColor(QPalette::Window, QColor(QStringLiteral("#071119")));
+            popupFrame->setPalette(palette);
+            popupFrame->setStyleSheet(QStringLiteral(
+                "QFrame { background:#071119; border:0; padding:0; }"));
+        }
+    }
+};
+
+} // namespace
+
+MainWindow::MainWindow(application::SessionService& sessionService, QWidget* parent)
     : QMainWindow(parent)
+    , sessionService_(sessionService)
 {
     setWindowTitle(applicationTitle());
+    resize(1440, 900);
 
-    auto* welcomeLabel = new QLabel(
-        QStringLiteral("AstroCapture\nVersão %1").arg(QStringLiteral(ASTROCAPTURE_VERSION)),
-        this);
-    welcomeLabel->setAlignment(Qt::AlignCenter);
-    setCentralWidget(welcomeLabel);
-    resize(640, 400);
+    auto* shell = new QWidget(this);
+    shell->setObjectName(QStringLiteral("applicationShell"));
+    shell->setStyleSheet(QString::fromLatin1(DashboardStyle));
+
+    auto* shellLayout = new QHBoxLayout(shell);
+    shellLayout->setContentsMargins(10, 10, 10, 10);
+    shellLayout->setSpacing(12);
+
+    auto* sidebar = new QFrame(shell);
+    sidebar->setObjectName(QStringLiteral("sidebar"));
+    sidebar->setFixedWidth(225);
+    auto* sidebarLayout = new QVBoxLayout(sidebar);
+    sidebarLayout->setContentsMargins(15, 22, 15, 14);
+    sidebarLayout->setSpacing(8);
+
+    sidebarLayout->addWidget(makeTextLabel(
+        QStringLiteral("◉ AstroCapture"),
+        QStringLiteral("brandMark"),
+        sidebar));
+    sidebarLayout->addWidget(makeTextLabel(
+        QStringLiteral("Capture o universo"),
+        QStringLiteral("brandTagline"),
+        sidebar));
+    sidebarLayout->addSpacing(20);
+
+    homeNavigationButton_ = new QPushButton(QStringLiteral("⌂   Início"), sidebar);
+    homeNavigationButton_->setObjectName(QStringLiteral("homeNavigationButton"));
+    homeNavigationButton_->setProperty("active", true);
+    homeNavigationButton_->setProperty("navigation", true);
+    homeNavigationButton_->setStyleSheet(QStringLiteral(
+        "QPushButton { text-align:left; border:0; border-radius:7px; padding:11px 14px; "
+        "background:transparent; color:#b5c5d0; }"
+        "QPushButton[active=\"true\"] { background:#0c2928; color:#42e4b3; }"
+        "QPushButton:hover { background:#0c2928; color:#42e4b3; }"));
+    libraryNavigationButton_ = new QPushButton(QStringLiteral("▧   Biblioteca"), sidebar);
+    libraryNavigationButton_->setObjectName(QStringLiteral("libraryNavigationButton"));
+    libraryNavigationButton_->setProperty("navigation", true);
+    libraryNavigationButton_->setStyleSheet(homeNavigationButton_->styleSheet());
+    auto* sequencesButton = new QPushButton(QStringLiteral("▱   Sequências"), sidebar);
+    sequencesButton->setObjectName(QStringLiteral("sequencesNavigationButton"));
+    sequencesButton->setProperty("navigation", true);
+    sequencesButton->setStyleSheet(libraryNavigationButton_->styleSheet());
+    auto* settingsButton = new QPushButton(QStringLiteral("⚙   Configurações"), sidebar);
+    settingsButton->setObjectName(QStringLiteral("settingsNavigationButton"));
+    settingsButton->setProperty("navigation", true);
+    settingsButton->setStyleSheet(libraryNavigationButton_->styleSheet());
+    sidebarLayout->addWidget(homeNavigationButton_);
+    sidebarLayout->addWidget(libraryNavigationButton_);
+    sidebarLayout->addWidget(sequencesButton);
+    sidebarLayout->addWidget(settingsButton);
+    sidebarLayout->addStretch();
+
+    auto* readyLayout = new QHBoxLayout;
+    auto* readyIndicator = makeTextLabel(QStringLiteral("●"), {}, sidebar);
+    readyIndicator->setStyleSheet(QStringLiteral("color:#40e0b1;"));
+    readyLayout->addWidget(readyIndicator);
+    readyLayout->addWidget(makeTextLabel(QStringLiteral("Aplicativo pronto"), {}, sidebar));
+    readyLayout->addStretch();
+    sidebarLayout->addLayout(readyLayout);
+    sidebarLayout->addWidget(makeTextLabel(
+        QStringLiteral("A câmera será conectada no fluxo de captura."),
+        QStringLiteral("sidebarStatusDetail"),
+        sidebar));
+
+    pages_ = new QStackedWidget(shell);
+    pages_->setObjectName(QStringLiteral("mainPages"));
+    homePage_ = createHomePage();
+    sessionsPage_ = createSessionsPage();
+    pages_->addWidget(homePage_);
+    pages_->addWidget(sessionsPage_);
+    pages_->setCurrentWidget(homePage_);
+
+    shellLayout->addWidget(sidebar);
+    shellLayout->addWidget(pages_, 1);
+    setCentralWidget(shell);
+
+    connect(homeNavigationButton_, &QPushButton::clicked, this, [this] { showHomePage(); });
+    connect(libraryNavigationButton_, &QPushButton::clicked, this, [this] { showSessionsPage(); });
+    sequencesButton->setEnabled(false);
+    settingsButton->setEnabled(false);
+}
+
+QWidget* MainWindow::createHomePage()
+{
+    auto* scroll = new QScrollArea(this);
+    scroll->setObjectName(QStringLiteral("homePage"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setStyleSheet(QStringLiteral(
+        "QScrollArea#homePage { background-color:#050d13; border:0; }"));
+    QPalette viewportPalette = scroll->viewport()->palette();
+    viewportPalette.setColor(QPalette::Window, QColor(QStringLiteral("#050d13")));
+    scroll->viewport()->setPalette(viewportPalette);
+    scroll->viewport()->setAutoFillBackground(true);
+
+    auto* page = new QWidget(scroll);
+    page->setAutoFillBackground(true);
+    QPalette pagePalette = page->palette();
+    pagePalette.setColor(QPalette::Window, QColor(QStringLiteral("#050d13")));
+    page->setPalette(pagePalette);
+    auto* pageLayout = new QHBoxLayout(page);
+    pageLayout->setContentsMargins(8, 8, 8, 8);
+    pageLayout->setSpacing(16);
+
+    auto* mainColumn = new QVBoxLayout;
+    mainColumn->setSpacing(16);
+
+    auto* banner = new StarfieldBanner(page);
+    auto* bannerLayout = new QVBoxLayout(banner);
+    bannerLayout->setContentsMargins(34, 26, 34, 26);
+    bannerLayout->addStretch();
+    auto* welcomeTitle = makeTextLabel(
+        QStringLiteral("Bem-vindo ao\nAstroCapture"),
+        QStringLiteral("welcomeTitle"),
+        banner);
+    welcomeTitle->setStyleSheet(
+        QStringLiteral("font-size:25pt; font-weight:700; color:#f1f6fa;"));
+    bannerLayout->addWidget(welcomeTitle);
+    auto* welcomeSubtitle = makeTextLabel(
+        QStringLiteral("Registre o céu, explore o universo."),
+        QStringLiteral("welcomeSubtitle"),
+        banner);
+    welcomeSubtitle->setStyleSheet(
+        QStringLiteral("font-size:12pt; font-weight:600; color:#e6edf3;"));
+    bannerLayout->addWidget(welcomeSubtitle);
+    auto* welcomeDetail = makeTextLabel(
+        QStringLiteral("Organize suas sessões astronômicas e acompanhe seu fluxo de captura."),
+        QStringLiteral("welcomeDetail"),
+        banner);
+    welcomeDetail->setWordWrap(true);
+    welcomeDetail->setMaximumWidth(440);
+    welcomeDetail->setStyleSheet(QStringLiteral("color:#a9bdca;"));
+    bannerLayout->addWidget(welcomeDetail);
+    bannerLayout->addStretch();
+    mainColumn->addWidget(banner);
+
+    auto* actionLayout = new QHBoxLayout;
+    actionLayout->setSpacing(12);
+    const std::vector<std::tuple<QString, QString, QString, QString>> actions{
+        {QStringLiteral("Iniciar sessão"), QStringLiteral("◎"),
+         QStringLiteral("Crie ou abra uma sessão para preparar sua captura."),
+         QStringLiteral("startCaptureAction")},
+        {QStringLiteral("Abrir biblioteca"), QStringLiteral("▱"),
+         QStringLiteral("Consulte as sessões e observações salvas."),
+         QStringLiteral("openLibraryAction")},
+        {QStringLiteral("Sequências"), QStringLiteral("▤"),
+         QStringLiteral("Controles de sequência estarão disponíveis nesta etapa."),
+         QStringLiteral("sequencesAction")},
+        {QStringLiteral("Configurações"), QStringLiteral("⚙"),
+         QStringLiteral("Preferências e dispositivos serão configurados aqui."),
+         QStringLiteral("settingsAction")}};
+
+    for (std::size_t index = 0; index < actions.size(); ++index) {
+        const auto& [title, icon, detail, objectName] = actions[index];
+        auto* card = makeCard(QStringLiteral("actionCard"), page);
+        auto* cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(16, 14, 16, 14);
+        cardLayout->setSpacing(9);
+        auto* actionIcon = makeTextLabel(icon, {}, card);
+        actionIcon->setStyleSheet(QStringLiteral("font-size:22pt; color:#40e0b1;"));
+        auto* actionTitle = makeTextLabel(title, QStringLiteral("cardTitle"), card);
+        auto* actionDetail = makeTextLabel(detail, QStringLiteral("mutedText"), card);
+        actionDetail->setWordWrap(true);
+        actionDetail->setMinimumHeight(54);
+        auto* actionButton = new QPushButton(
+            index == 0 ? QStringLiteral("Iniciar  →") : QStringLiteral("Abrir  →"),
+            card);
+        actionButton->setObjectName(objectName);
+        if (index < 2) {
+            actionButton->setProperty("primary", index == 0);
+            actionButton->setStyleSheet(index == 0
+                    ? QStringLiteral("border:0; background:transparent; color:#46dfb2; text-align:left;")
+                    : QStringLiteral("border:0; background:transparent; color:#c1d1db; text-align:left;"));
+            if (index == 0) {
+                connect(actionButton, &QPushButton::clicked,
+                        this, [this] { openSessionConfigurationDialog(); });
+            } else {
+                connect(actionButton, &QPushButton::clicked,
+                        this, [this] { showSessionsPage(); });
+            }
+        } else {
+            actionButton->setEnabled(false);
+            actionButton->setText(QStringLiteral("Em breve"));
+            actionButton->setStyleSheet(
+                QStringLiteral("border:0; background:transparent; color:#657681; text-align:left;"));
+        }
+        cardLayout->addWidget(actionIcon);
+        cardLayout->addWidget(actionTitle);
+        cardLayout->addWidget(actionDetail);
+        cardLayout->addStretch();
+        cardLayout->addWidget(actionButton);
+        actionLayout->addWidget(card, 1);
+    }
+    mainColumn->addLayout(actionLayout);
+
+    auto* recentHeader = new QHBoxLayout;
+    recentHeader->addWidget(makeTextLabel(
+        QStringLiteral("Sessões recentes"),
+        QStringLiteral("sectionTitle"),
+        page));
+    recentHeader->addStretch();
+    auto* viewSessionsButton = new QPushButton(QStringLiteral("Ver sessões  →"), page);
+    viewSessionsButton->setObjectName(QStringLiteral("viewSessionsAction"));
+    viewSessionsButton->setStyleSheet(
+        QStringLiteral("border:0; background:transparent; color:#46dfb2;"));
+    connect(viewSessionsButton, &QPushButton::clicked, this, [this] { showSessionsPage(); });
+    recentHeader->addWidget(viewSessionsButton);
+    mainColumn->addLayout(recentHeader);
+
+    auto* recentLayout = new QHBoxLayout;
+    recentLayout->setSpacing(10);
+    const auto sessions = sessionService_.listSessions();
+    if (sessions.empty()) {
+        auto* emptyCard = makeCard(QStringLiteral("recentCard"), page);
+        auto* emptyLayout = new QVBoxLayout(emptyCard);
+        emptyLayout->setContentsMargins(16, 13, 16, 13);
+        emptyLayout->addWidget(makeTextLabel(
+            QStringLiteral("Nenhuma sessão criada"),
+            QStringLiteral("cardTitle"),
+            emptyCard));
+        emptyLayout->addWidget(makeTextLabel(
+            QStringLiteral("Inicie uma captura para criar sua primeira sessão."),
+            QStringLiteral("mutedText"),
+            emptyCard));
+        recentLayout->addWidget(emptyCard, 1);
+    } else {
+        const auto visibleCount = qMin<std::size_t>(sessions.size(), 4);
+        for (std::size_t index = 0; index < visibleCount; ++index) {
+            const auto& record = sessions[index];
+            auto* card = makeCard(QStringLiteral("recentCard"), page);
+            auto* recentCardLayout = new QVBoxLayout(card);
+            recentCardLayout->setContentsMargins(13, 12, 13, 12);
+            recentCardLayout->addWidget(makeTextLabel(
+                QString::fromStdString(record.session.name()),
+                QStringLiteral("cardTitle"),
+                card));
+            recentCardLayout->addWidget(makeTextLabel(
+                QStringLiteral("%1 · %2")
+                    .arg(stageName(record.session.stage()),
+                         record.isOpen ? QStringLiteral("Aberta") : QStringLiteral("Fechada")),
+                QStringLiteral("mutedText"),
+                card));
+            recentLayout->addWidget(card, 1);
+        }
+    }
+    mainColumn->addLayout(recentLayout);
+
+    auto* rightColumn = new QVBoxLayout;
+    rightColumn->setSpacing(12);
+    auto* cameraCard = makeCard(QStringLiteral("statusCard"), page);
+    auto* cameraLayout = new QVBoxLayout(cameraCard);
+    cameraLayout->setContentsMargins(16, 14, 16, 14);
+    cameraLayout->addWidget(makeTextLabel(
+        QStringLiteral("◎   Status da câmera"),
+        QStringLiteral("cardTitle"),
+        cameraCard));
+    cameraLayout->addWidget(makeTextLabel(
+        QStringLiteral("●  Não conectada"),
+        QStringLiteral("cameraConnectionStatus"),
+        cameraCard));
+    cameraLayout->addWidget(makeTextLabel(
+        QStringLiteral("Conecte uma câmera na tela de captura."),
+        QStringLiteral("statusDetail"),
+        cameraCard));
+    rightColumn->addWidget(cameraCard);
+
+    auto* currentSessionCard = makeCard(QStringLiteral("statusCard"), page);
+    auto* currentSessionLayout = new QVBoxLayout(currentSessionCard);
+    currentSessionLayout->setContentsMargins(16, 14, 16, 14);
+    currentSessionLayout->addWidget(makeTextLabel(
+        QStringLiteral("◇   Sessão atual"),
+        QStringLiteral("cardTitle"),
+        currentSessionCard));
+    const auto currentSession = std::find_if(
+        sessions.begin(),
+        sessions.end(),
+        [](const domain::SessionRecord& record) { return record.isOpen; });
+    currentSessionLayout->addWidget(makeTextLabel(
+        currentSession == sessions.end()
+            ? QStringLiteral("Nenhuma sessão aberta")
+            : QString::fromStdString(currentSession->session.name()),
+        QStringLiteral("currentSessionName"),
+        currentSessionCard));
+    if (currentSession != sessions.end()) {
+        currentSessionLayout->addWidget(makeTextLabel(
+            QStringLiteral("%1 · %2")
+                .arg(stageName(currentSession->session.stage()),
+                     QString::fromStdString(currentSession->session.targetId())),
+            QStringLiteral("statusDetail"),
+            currentSessionCard));
+    } else {
+        currentSessionLayout->addWidget(makeTextLabel(
+            QStringLiteral("Crie ou abra uma sessão para começar."),
+            QStringLiteral("statusDetail"),
+            currentSessionCard));
+    }
+    auto* currentSessionButton = new QPushButton(QStringLiteral("Abrir sessões"), currentSessionCard);
+    currentSessionButton->setObjectName(QStringLiteral("currentSessionAction"));
+    currentSessionButton->setStyleSheet(
+        QStringLiteral("border:1px solid #25c99b; border-radius:6px; padding:8px; color:#46dfb2;"));
+    connect(currentSessionButton, &QPushButton::clicked, this, [this] { showSessionsPage(); });
+    currentSessionLayout->addWidget(currentSessionButton);
+    rightColumn->addWidget(currentSessionCard);
+
+    auto* dataCard = makeCard(QStringLiteral("statusCard"), page);
+    auto* dataLayout = new QVBoxLayout(dataCard);
+    dataLayout->setContentsMargins(16, 14, 16, 14);
+    dataLayout->addWidget(makeTextLabel(
+        QStringLiteral("▤   Dados e armazenamento"),
+        QStringLiteral("cardTitle"),
+        dataCard));
+    dataLayout->addWidget(makeTextLabel(
+        QStringLiteral("Banco local"),
+        QStringLiteral("statusDetail"),
+        dataCard));
+    dataLayout->addWidget(makeTextLabel(
+        QStringLiteral("SQLite · astrocapture.sqlite3"),
+        QStringLiteral("databaseStatus"),
+        dataCard));
+    dataLayout->addWidget(makeTextLabel(
+        QStringLiteral("Os originais são preservados na pasta de dados do aplicativo."),
+        QStringLiteral("statusDetail"),
+        dataCard));
+    rightColumn->addWidget(dataCard);
+
+    auto* tipCard = makeCard(QStringLiteral("statusCard"), page);
+    auto* tipLayout = new QVBoxLayout(tipCard);
+    tipLayout->setContentsMargins(16, 14, 16, 14);
+    tipLayout->addWidget(makeTextLabel(
+        QStringLiteral("✧   Dica"),
+        QStringLiteral("cardTitle"),
+        tipCard));
+    auto* tip = makeTextLabel(
+        QStringLiteral("Você pode preparar sessões antes de conectar uma câmera. O simulador ajuda a testar o fluxo."),
+        QStringLiteral("statusDetail"),
+        tipCard);
+    tip->setWordWrap(true);
+    tipLayout->addWidget(tip);
+    rightColumn->addWidget(tipCard);
+    rightColumn->addStretch();
+
+    pageLayout->addLayout(mainColumn, 1);
+    pageLayout->addLayout(rightColumn);
+    rightColumn->setStretch(0, 0);
+    rightColumn->setStretch(1, 0);
+    rightColumn->setStretch(2, 0);
+    rightColumn->setStretch(3, 0);
+    pageLayout->setStretch(0, 1);
+    pageLayout->setStretch(1, 0);
+
+    scroll->setWidget(page);
+    return scroll;
+}
+
+QWidget* MainWindow::createSessionsPage()
+{
+    auto* page = new QWidget(this);
+    page->setObjectName(QStringLiteral("sessionsPage"));
+    page->setAutoFillBackground(true);
+    QPalette pagePalette = page->palette();
+    pagePalette.setColor(QPalette::Window, QColor(QStringLiteral("#050d13")));
+    page->setPalette(pagePalette);
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(18, 18, 18, 18);
+    layout->setSpacing(14);
+
+    layout->addWidget(makeTextLabel(
+        QStringLiteral("Sessões de captura"),
+        QStringLiteral("sectionTitle"),
+        page));
+    layout->addWidget(makeTextLabel(
+        QStringLiteral("Selecione uma sessão existente para continuar."),
+        QStringLiteral("mutedText"),
+        page));
+
+    layout->addWidget(makeTextLabel(
+        QStringLiteral("Sessões existentes"),
+        QStringLiteral("sectionTitle"),
+        page));
+    sessionList_ = new QListWidget(page);
+    sessionList_->setObjectName(QStringLiteral("sessionList"));
+    sessionList_->setSpacing(5);
+    layout->addWidget(sessionList_, 1);
+    auto* footer = new QHBoxLayout;
+    activeSessionLabel_ = new QLabel(QStringLiteral("Nenhuma sessão aberta"), page);
+    activeSessionLabel_->setObjectName(QStringLiteral("activeSessionLabel"));
+    activeSessionLabel_->setWordWrap(true);
+    footer->addWidget(activeSessionLabel_, 1);
+    layout->addLayout(footer);
+
+    connect(sessionList_, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
+        openSession(item->data(Qt::UserRole).toString().toStdString());
+    });
+
+    try {
+        refreshSessions();
+    } catch (const std::exception& error) {
+        QMessageBox::critical(
+            this,
+            QStringLiteral("Não foi possível carregar as sessões"),
+            QString::fromUtf8(error.what()));
+    }
+    return page;
+}
+
+void MainWindow::openSessionConfigurationDialog()
+{
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("sessionConfigurationDialog"));
+    dialog.setWindowTitle(QStringLiteral("Configurar sessão"));
+    dialog.setModal(true);
+    dialog.setMinimumWidth(420);
+    dialog.setStyleSheet(QStringLiteral(
+        "QDialog { background:#09151d; color:#e5edf3; }"
+        "QLabel { color:#e5edf3; }"
+        "QLineEdit, QComboBox { background:#071119; color:#e5edf3; "
+        "border:1px solid #263943; border-radius:5px; padding:7px; }"
+        "QComboBox QAbstractItemView { background:#071119; color:#e5edf3; "
+        "selection-background-color:#0c2928; selection-color:#49e3b6; "
+        "border:0; outline:0; }"
+        "QPushButton { background:#0d302d; color:#49e3b6; "
+        "border:1px solid #21c99b; border-radius:6px; padding:8px 12px; }"));
+
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->addWidget(makeTextLabel(
+        QStringLiteral("Configure os dados da nova sessão antes de iniciar."),
+        QStringLiteral("sessionDialogDescription"),
+        &dialog));
+
+    auto* targetInput = new QLineEdit(&dialog);
+    targetInput->setObjectName(QStringLiteral("sessionDialogTargetInput"));
+    targetInput->setPlaceholderText(QStringLiteral("Ex.: M42"));
+    auto* sessionInput = new QLineEdit(&dialog);
+    sessionInput->setObjectName(QStringLiteral("sessionDialogNameInput"));
+    sessionInput->setPlaceholderText(QStringLiteral("Ex.: Observação de outubro"));
+    auto* workflowInput = new DarkComboBox(&dialog);
+    workflowInput->setObjectName(QStringLiteral("sessionDialogWorkflowInput"));
+    workflowInput->addItem(QStringLiteral("Captura"), static_cast<int>(domain::SessionStage::Capture));
+    workflowInput->addItem(QStringLiteral("Empilhamento"), static_cast<int>(domain::SessionStage::Stacking));
+
+    auto* form = new QFormLayout;
+    form->addRow(QStringLiteral("Nome da Sessão"), targetInput);
+    form->addRow(QStringLiteral("Descrição"), sessionInput);
+    form->addRow(QStringLiteral("Fluxo de trabalho"), workflowInput);
+    layout->addLayout(form);
+
+    auto* buttons = new QDialogButtonBox(&dialog);
+    buttons->setObjectName(QStringLiteral("sessionDialogButtons"));
+    auto* startButton = buttons->addButton(
+        QStringLiteral("Criar e iniciar sessão"),
+        QDialogButtonBox::AcceptRole);
+    startButton->setObjectName(QStringLiteral("createAndStartSessionButton"));
+    auto* cancelButton = buttons->addButton(QDialogButtonBox::Cancel);
+    cancelButton->setText(QStringLiteral("Cancelar"));
+    startButton->setEnabled(false);
+    layout->addWidget(buttons);
+
+    const auto updateStartButton = [targetInput, sessionInput, startButton] {
+        startButton->setEnabled(
+            !targetInput->text().trimmed().isEmpty()
+            && !sessionInput->text().trimmed().isEmpty());
+    };
+    connect(targetInput, &QLineEdit::textChanged, &dialog, updateStartButton);
+    connect(sessionInput, &QLineEdit::textChanged, &dialog, updateStartButton);
+    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+    connect(startButton, &QPushButton::clicked, &dialog, [this, &dialog, targetInput, sessionInput, workflowInput] {
+        try {
+            const auto stage = static_cast<domain::SessionStage>(
+                workflowInput->currentData().toInt());
+            const auto record = sessionService_.createSession(
+                targetInput->text(),
+                sessionInput->text(),
+                stage);
+            activeSessionId_ = record.session.id();
+            dialog.accept();
+        } catch (const std::exception& error) {
+            QMessageBox::warning(
+                &dialog,
+                QStringLiteral("Não foi possível iniciar a sessão"),
+                QString::fromUtf8(error.what()));
+        }
+    });
+
+    if (dialog.exec() == QDialog::Accepted) {
+        showHomePage();
+    }
+}
+
+void MainWindow::openSession(const std::string& sessionId)
+{
+    try {
+        const auto record = sessionService_.openSession(sessionId);
+        activeSessionId_ = sessionId;
+        activeSessionLabel_->setText(
+            QStringLiteral("Sessão aberta: %1 (%2)")
+                .arg(QString::fromStdString(record.session.name()), stageName(record.session.stage())));
+        refreshSessions();
+    } catch (const std::exception& error) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("Não foi possível abrir a sessão"),
+            QString::fromUtf8(error.what()));
+    }
+}
+
+void MainWindow::showSessionInformation(const std::string& sessionId)
+{
+    try {
+        const auto sessions = sessionService_.listSessions();
+        const auto session = std::find_if(
+            sessions.cbegin(),
+            sessions.cend(),
+            [&sessionId](const domain::SessionRecord& candidate) {
+                return candidate.session.id() == sessionId;
+            });
+        if (session == sessions.cend()) {
+            throw std::runtime_error("Session does not exist");
+        }
+        const auto target = sessionService_.targetForSession(sessionId);
+        const auto createdAt = std::chrono::duration_cast<std::chrono::milliseconds>(
+            session->session.createdAt().time_since_epoch()).count();
+        const auto updatedAt = std::chrono::duration_cast<std::chrono::milliseconds>(
+            session->session.updatedAt().time_since_epoch()).count();
+        const QString details = QStringLiteral(
+            "Nome da sessão: %1\nDescrição: %2\nEtapa: %3\nEstado: %4\nCriada: %5\nAtualizada: %6")
+            .arg(
+                QString::fromStdString(target.name()),
+                QString::fromStdString(session->session.name()),
+                stageName(session->session.stage()),
+                session->isOpen ? QStringLiteral("Aberta") : QStringLiteral("Fechada"),
+                QDateTime::fromMSecsSinceEpoch(createdAt).toUTC().toString(Qt::ISODateWithMs),
+                QDateTime::fromMSecsSinceEpoch(updatedAt).toUTC().toString(Qt::ISODateWithMs));
+        QMessageBox::information(this, QStringLiteral("Informações da sessão"), details);
+    } catch (const std::exception& error) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("Não foi possível carregar as informações"),
+            QString::fromUtf8(error.what()));
+    }
+}
+
+void MainWindow::deleteSession(const std::string& sessionId)
+{
+    const auto confirmation = QMessageBox::warning(
+        this,
+        QStringLiteral("Excluir sessão"),
+        QStringLiteral(
+            "A sessão e todos os arquivos de imagem associados serão excluídos permanentemente. "
+            "Deseja continuar?"),
+        QMessageBox::Yes | QMessageBox::Cancel,
+        QMessageBox::Cancel);
+    if (confirmation != QMessageBox::Yes) {
+        return;
+    }
+
+    try {
+        sessionService_.deleteSession(sessionId);
+        if (activeSessionId_ == sessionId) {
+            activeSessionId_.clear();
+            activeSessionLabel_->setText(QStringLiteral("Nenhuma sessão aberta"));
+        }
+        refreshSessions();
+    } catch (const std::exception& error) {
+        QMessageBox::critical(
+            this,
+            QStringLiteral("Não foi possível excluir a sessão"),
+            QString::fromUtf8(error.what()));
+        try {
+            refreshSessions();
+        } catch (const std::exception& refreshError) {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("Não foi possível atualizar as sessões"),
+                QString::fromUtf8(refreshError.what()));
+        }
+    }
+}
+
+void MainWindow::showHomePage()
+{
+    setNavigationSelection(true);
+    QWidget* oldHomePage = homePage_;
+    pages_->removeWidget(oldHomePage);
+    homePage_ = createHomePage();
+    pages_->insertWidget(0, homePage_);
+    oldHomePage->deleteLater();
+    pages_->setCurrentWidget(homePage_);
+}
+
+void MainWindow::showSessionsPage()
+{
+    setNavigationSelection(false);
+    pages_->setCurrentWidget(sessionsPage_);
+    try {
+        refreshSessions();
+    } catch (const std::exception& error) {
+        QMessageBox::critical(
+            this,
+            QStringLiteral("Não foi possível carregar as sessões"),
+            QString::fromUtf8(error.what()));
+    }
+}
+
+void MainWindow::setNavigationSelection(bool homeSelected)
+{
+    homeNavigationButton_->setProperty("active", homeSelected);
+    libraryNavigationButton_->setProperty("active", !homeSelected);
+    for (QPushButton* button : {homeNavigationButton_, libraryNavigationButton_}) {
+        button->style()->unpolish(button);
+        button->style()->polish(button);
+        button->update();
+    }
+}
+
+void MainWindow::refreshSessions()
+{
+    sessionList_->clear();
+    for (const domain::SessionRecord& record : sessionService_.listSessions()) {
+        const QString name = QString::fromStdString(record.session.name());
+        const QString sessionId = QString::fromStdString(record.session.id());
+        auto* item = new QListWidgetItem(sessionList_);
+        item->setSizeHint(QSize(0, 58));
+        item->setData(Qt::UserRole, QString::fromStdString(record.session.id()));
+
+        auto* row = new QWidget(sessionList_);
+        auto* rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(12, 5, 5, 5);
+        rowLayout->setSpacing(10);
+        auto* detailsLayout = new QVBoxLayout;
+        detailsLayout->setContentsMargins(0, 0, 0, 0);
+        detailsLayout->setSpacing(2);
+        detailsLayout->addWidget(makeTextLabel(
+            name,
+            QStringLiteral("sessionName"),
+            row));
+        detailsLayout->addWidget(makeTextLabel(
+            QStringLiteral("%1 · %2")
+                .arg(stageName(record.session.stage()),
+                     record.isOpen ? QStringLiteral("Aberta") : QStringLiteral("Fechada")),
+            QStringLiteral("mutedText"),
+            row));
+        rowLayout->addLayout(detailsLayout, 1);
+
+        auto* menuButton = new QToolButton(row);
+        menuButton->setObjectName(QStringLiteral("sessionMenuButton"));
+        menuButton->setText(QStringLiteral("⋮"));
+        menuButton->setToolTip(QStringLiteral("Ações da sessão"));
+        menuButton->setPopupMode(QToolButton::InstantPopup);
+        menuButton->setStyleSheet(QStringLiteral(
+            "QToolButton { color:#e5edf3; background:transparent; border:0; "
+            "border-radius:4px; padding:5px 10px; font-size:16pt; }"
+            "QToolButton:hover { background:#17303a; color:#49e3b6; }"
+            "QToolButton::menu-indicator { image:none; width:0; }"));
+
+        auto* menu = new QMenu(menuButton);
+        menu->setStyleSheet(QStringLiteral(
+            "QMenu { background:#09151d; color:#e5edf3; border:1px solid #263943; padding:4px; }"
+            "QMenu::item { padding:7px 24px; }"
+            "QMenu::item:selected { background:#0c2928; color:#49e3b6; }"));
+        QAction* openAction = menu->addAction(QStringLiteral("Abrir"));
+        QAction* informationAction = menu->addAction(QStringLiteral("Informações"));
+        menu->addSeparator();
+        QAction* deleteAction = menu->addAction(QStringLiteral("Excluir"));
+        menuButton->setMenu(menu);
+        connect(openAction, &QAction::triggered, this, [this, sessionId] {
+            openSession(sessionId.toStdString());
+        });
+        connect(informationAction, &QAction::triggered, this, [this, sessionId] {
+            showSessionInformation(sessionId.toStdString());
+        });
+        connect(deleteAction, &QAction::triggered, this, [this, sessionId] {
+            deleteSession(sessionId.toStdString());
+        });
+        rowLayout->addWidget(menuButton);
+        sessionList_->setItemWidget(item, row);
+    }
 }

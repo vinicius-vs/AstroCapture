@@ -10,6 +10,8 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.2 REQUIRED COMPONENTS Sql Widgets)
 
 add_executable(astrocapture
+    src/application/session_service.cpp
+    src/application/session_service.h
     src/application/capture_frame_service.cpp
     src/application/capture_frame_service.h
     src/application/capture_sequence_service.cpp
@@ -60,13 +62,24 @@ if(BUILD_TESTING)
     find_package(Qt6 6.2 REQUIRED COMPONENTS Test)
 
     add_executable(astrocapture_tests
+        src/application/session_service.cpp
+        src/application/session_service.h
+        src/domain/capture_entities.cpp
+        src/domain/capture_entities.h
+        src/domain/repositories/session_repository.h
+        src/infrastructure/persistence/sqlite_database.cpp
+        src/infrastructure/persistence/sqlite_database.h
+        src/infrastructure/persistence/sqlite_repositories.cpp
+        src/infrastructure/persistence/sqlite_repositories.h
+        src/infrastructure/storage/storage_layout.cpp
+        src/infrastructure/storage/storage_layout.h
         src/presentation/main_window.cpp
         src/presentation/main_window.h
         tests/unit/test_application_metadata.cpp
     )
 
     target_include_directories(astrocapture_tests PRIVATE src)
-    target_link_libraries(astrocapture_tests PRIVATE Qt6::Test Qt6::Widgets)
+    target_link_libraries(astrocapture_tests PRIVATE Qt6::Sql Qt6::Test Qt6::Widgets)
     target_compile_definitions(astrocapture_tests PRIVATE
         ASTROCAPTURE_VERSION="${PROJECT_VERSION}"
     )
