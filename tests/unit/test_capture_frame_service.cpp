@@ -326,6 +326,68 @@ private slots:
         QCOMPARE(statistics.night.exposureMicroseconds, std::uint64_t{8'000'000});
     }
 
+    void sequenceContinuationCapturesOnlyPendingFrames()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        CaptureFixture fixture(
+            directory.path(),
+            CaptureSettings{FrameType::Light, 5s, 800, CaptureMode::Finite, 3});
+        SimulatedCamera camera;
+        QVERIFY(std::holds_alternative<std::monostate>(camera.connect()));
+        RecordingLoggingService logging;
+
+        Frame completedFrame("completed-before-recovery", "run-1", FrameType::Light, 5s, 800);
+        fixture.frames.create(completedFrame);
+        completedFrame.startExposure(
+            std::chrono::time_point_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now()));
+        fixture.frames.update(completedFrame);
+        completedFrame.startTransfer();
+        fixture.frames.update(completedFrame);
+        completedFrame.startValidation();
+        fixture.frames.update(completedFrame);
+        completedFrame.completeValidation("already-captured.pgm", 64);
+        fixture.frames.update(completedFrame);
+
+        Frame interruptedFrame("interrupted-before-recovery", "run-1", FrameType::Light, 5s, 800);
+        fixture.frames.create(interruptedFrame);
+        interruptedFrame.startExposure(
+            std::chrono::time_point_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now()));
+        fixture.frames.update(interruptedFrame);
+
+        Frame pendingFrame("pending-before-recovery", "run-1", FrameType::Light, 5s, 800);
+        fixture.frames.create(pendingFrame);
+
+        CaptureFrameService frameService(
+            camera,
+            fixture.runs,
+            fixture.frames,
+            fixture.imageStorage,
+            logging,
+            fixture.target,
+            fixture.session,
+            fixture.captureRun);
+        CaptureSequenceService sequenceService(
+            frameService,
+            fixture.runs,
+            fixture.frames,
+            fixture.captureRun);
+
+        const auto completedFrames = sequenceService.execute();
+        QCOMPARE(completedFrames.size(), std::size_t{2});
+        const auto persistedFrames = fixture.frames.findByCaptureRunId("run-1");
+        QCOMPARE(persistedFrames.size(), std::size_t{3});
+        QCOMPARE(persistedFrames[0].id(), completedFrame.id());
+        QCOMPARE(persistedFrames[0].state(), FrameState::Completed);
+        QCOMPARE(persistedFrames[1].id(), interruptedFrame.id());
+        QCOMPARE(persistedFrames[1].state(), FrameState::Exposing);
+        QCOMPARE(persistedFrames[2].id(), pendingFrame.id());
+        QCOMPARE(persistedFrames[2].state(), FrameState::Completed);
+        QCOMPARE(fixture.captureRun.state(), CaptureRunState::Paused);
+    }
+
     void simulatedCaptureStoresImageAndCompletedMetadata()
     {
         QTemporaryDir directory;

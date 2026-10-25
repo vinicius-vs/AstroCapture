@@ -15,6 +15,8 @@
 #include <QDate>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QFileInfo>
+#include <QStorageInfo>
 
 #include <array>
 #include <chrono>
@@ -148,6 +150,57 @@ void CaptureWorker::execute()
             QDir(applicationDataDirectory_).filePath(QStringLiteral("images")));
         infrastructure::ImageStorage imageStorage(storageLayout);
         infrastructure::JsonLinesLoggingService loggingService(applicationDataDirectory_);
+
+        auto capabilities = camera_.capabilities();
+        if (const auto* error = std::get_if<domain::CameraError>(&capabilities)) {
+            if (error->code != domain::CameraErrorCode::NotConnected) {
+                throw std::runtime_error(
+                    QStringLiteral("Não foi possível validar a câmera: %1")
+                        .arg(QString::fromStdString(error->message))
+                        .toStdString());
+            }
+            const auto connection = camera_.connect();
+            if (const auto* connectionError = std::get_if<domain::CameraError>(&connection)) {
+                throw std::runtime_error(
+                    QStringLiteral("Não foi possível conectar à câmera: %1")
+                        .arg(QString::fromStdString(connectionError->message))
+                        .toStdString());
+            }
+            capabilities = camera_.capabilities();
+        }
+        if (const auto* error = std::get_if<domain::CameraError>(&capabilities)) {
+            throw std::runtime_error(
+                QStringLiteral("Não foi possível validar a câmera: %1")
+                    .arg(QString::fromStdString(error->message))
+                    .toStdString());
+        }
+        const auto cameraSettings = camera_.settings();
+        if (const auto* error = std::get_if<domain::CameraError>(&cameraSettings)) {
+            throw std::runtime_error(
+                QStringLiteral("Não foi possível ler as configurações da câmera: %1")
+                    .arg(QString::fromStdString(error->message))
+                    .toStdString());
+        }
+        captureRun_.settings().validate(
+            std::get<domain::CameraCapabilities>(capabilities),
+            std::get<domain::CameraSettings>(cameraSettings));
+
+        const QString sessionDirectory = storageLayout.sessionDirectory(
+            *target,
+            sessionRecord->session);
+        const QFileInfo sessionDirectoryInfo(sessionDirectory);
+        const QStorageInfo storage(sessionDirectory);
+        if (!sessionDirectoryInfo.isDir()
+            || !sessionDirectoryInfo.isWritable()
+            || !storage.isValid()
+            || !storage.isReady()
+            || storage.bytesAvailable() <= 0) {
+            throw std::runtime_error(
+                QStringLiteral("O armazenamento da sessão não está disponível para gravação: %1")
+                    .arg(sessionDirectory)
+                    .toStdString());
+        }
+
         application::CaptureFrameService captureFrameService(
             camera_,
             captureRunRepository,

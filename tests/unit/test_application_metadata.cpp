@@ -1,9 +1,14 @@
 #include "app/application_metadata.h"
+#include "application/capture_frame_service.h"
 #include "application/capture_configuration_service.h"
+#include "application/session_recovery_service.h"
 #include "application/session_service.h"
 #include "infrastructure/camera/simulated_camera.h"
+#include "infrastructure/logging/json_lines_logging_service.h"
 #include "infrastructure/persistence/sqlite_database.h"
 #include "infrastructure/persistence/sqlite_repositories.h"
+#include "infrastructure/recovery/session_file_inspector.h"
+#include "infrastructure/storage/image_storage.h"
 #include "infrastructure/storage/storage_layout.h"
 #include "presentation/capture_worker.h"
 #include "presentation/main_window.h"
@@ -165,6 +170,153 @@ private slots:
         const auto persistedRun = captureRunRepository.findById(captureRun.id());
         QVERIFY(persistedRun);
         QCOMPARE(persistedRun->state(), domain::CaptureRunState::Paused);
+    }
+
+    void openingIncompleteSessionOffersAndExecutesSafeContinuation()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        infrastructure::SqliteDatabase database(
+            QDir(directory.path()).filePath(QStringLiteral("astrocapture.sqlite3")));
+        database.open();
+        infrastructure::SqliteSessionRepository sessionRepository(database);
+        infrastructure::SqliteCaptureRunRepository captureRunRepository(database);
+        infrastructure::SqliteFrameRepository frameRepository(database);
+        infrastructure::StorageLayout storageLayout(
+            QDir(directory.path()).filePath(QStringLiteral("images")));
+        application::SessionService sessionService(sessionRepository, storageLayout);
+        const auto session = sessionService.createSession(
+            QStringLiteral("M42"),
+            QStringLiteral("Recovery test"),
+            domain::SessionStage::Capture);
+
+        infrastructure::SimulatedCamera camera;
+        application::CaptureConfigurationService configurationService(
+            sessionRepository,
+            captureRunRepository,
+            camera);
+        const domain::CaptureRun captureRun = configurationService.configureSequence(
+            session.session.id(),
+            domain::CaptureSettings{
+                domain::FrameType::Light,
+                std::chrono::milliseconds{10},
+                800,
+                domain::CaptureMode::Finite,
+                2});
+
+        infrastructure::JsonLinesLoggingService loggingService(directory.path());
+        infrastructure::ImageStorage imageStorage(storageLayout);
+        const domain::Target target = sessionService.targetForSession(session.session.id());
+        domain::CaptureRun initialRun = *captureRunRepository.findById(captureRun.id());
+        application::CaptureFrameService frameService(
+            camera,
+            captureRunRepository,
+            frameRepository,
+            imageStorage,
+            loggingService,
+            target,
+            session.session,
+            initialRun);
+        const auto plannedFrames = frameRepository.findByCaptureRunId(captureRun.id());
+        QCOMPARE(plannedFrames.size(), std::size_t{2});
+        captureRunRepository.updateState(
+            captureRun.id(),
+            domain::CaptureRunState::Running);
+        initialRun.start();
+        const domain::Frame completedFrame = frameService.execute(plannedFrames.front().id());
+        QCOMPARE(completedFrame.state(), domain::FrameState::Completed);
+
+        const QString orphanDirectory = QDir(sessionService.sessionDirectory(session))
+                                            .filePath(
+                                                QStringLiteral("nights/2026-10-25/Light"));
+        QVERIFY(QDir().mkpath(orphanDirectory));
+        QFile orphanFile(QDir(orphanDirectory).filePath(QStringLiteral("orphan.pgm")));
+        QVERIFY(orphanFile.open(QIODevice::WriteOnly));
+        QCOMPARE(orphanFile.write("orphan"), qint64{6});
+        orphanFile.close();
+
+        infrastructure::LocalSessionFileInspector fileInspector;
+        application::SessionRecoveryService recoveryService(
+            captureRunRepository,
+            frameRepository,
+            fileInspector,
+            loggingService);
+        MainWindow window(
+            sessionService,
+            configurationService,
+            camera,
+            directory.path(),
+            &recoveryService);
+        window.show();
+
+        auto* sessionList = window.findChild<QListWidget*>(QStringLiteral("sessionList"));
+        QVERIFY(sessionList);
+        QCOMPARE(sessionList->count(), 1);
+        QTimer::singleShot(0, [] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            QVERIFY(dialog);
+            QCOMPARE(dialog->objectName(), QStringLiteral("sessionRecoveryDialog"));
+            const auto* summary =
+                dialog->findChild<QLabel*>(QStringLiteral("recoverySummary"));
+            QVERIFY(summary);
+            QVERIFY(summary->text().contains(QStringLiteral("não serão repetidos")));
+            const auto* runSelector =
+                dialog->findChild<QComboBox*>(QStringLiteral("recoveryRunSelector"));
+            QVERIFY(runSelector);
+            QCOMPARE(runSelector->count(), 1);
+            QVERIFY(runSelector->itemText(0).contains(QStringLiteral("1 pendente(s)")));
+            const auto* findings =
+                dialog->findChild<QListWidget*>(QStringLiteral("recoveryFindings"));
+            QVERIFY(findings);
+            QVERIFY(findings->count() >= 2);
+            bool orphanExplained = false;
+            for (int index = 0; index < findings->count(); ++index) {
+                orphanExplained = orphanExplained
+                    || findings->item(index)->text().contains(
+                        QStringLiteral("No completed frame record references this file."));
+            }
+            QVERIFY(orphanExplained);
+            auto* continueButton =
+                dialog->findChild<QPushButton*>(QStringLiteral("continueRecoveryButton"));
+            QVERIFY(continueButton);
+            QVERIFY(continueButton->isEnabled());
+            continueButton->click();
+        });
+        QVERIFY(QMetaObject::invokeMethod(
+            sessionList,
+            "itemActivated",
+            Qt::DirectConnection,
+            Q_ARG(QListWidgetItem*, sessionList->item(0))));
+
+        auto* status =
+            window.findChild<QLabel*>(QStringLiteral("captureConfigurationStatus"));
+        QVERIFY(status);
+        QTRY_VERIFY2_WITH_TIMEOUT(
+            status->text().contains(QStringLiteral("Captura concluída")),
+            qPrintable(status->text()),
+            3000);
+        QTRY_VERIFY_WITH_TIMEOUT([&window] {
+            auto* thread = window.findChild<QThread*>(
+                QStringLiteral("captureExecutionThread"));
+            return !thread || !thread->isRunning();
+        }(), 3000);
+
+        const auto persistedFrames = frameRepository.findByCaptureRunId(captureRun.id());
+        QCOMPARE(persistedFrames.size(), std::size_t{2});
+        QCOMPARE(persistedFrames[0].state(), domain::FrameState::Completed);
+        QCOMPARE(persistedFrames[0].id(), completedFrame.id());
+        QCOMPARE(persistedFrames[1].state(), domain::FrameState::Completed);
+        QCOMPARE(captureRunRepository.findBySessionId(session.session.id()).size(), std::size_t{1});
+        const auto persistedRun = captureRunRepository.findById(captureRun.id());
+        QVERIFY(persistedRun);
+        QCOMPARE(persistedRun->state(), domain::CaptureRunState::Completed);
+
+        QFile logFile(loggingService.activeLogPath());
+        QVERIFY(logFile.open(QIODevice::ReadOnly));
+        const QByteArray logContent = logFile.readAll();
+        QVERIFY(logContent.contains("\"event\":\"session.recovery.decision\""));
+        QVERIFY(logContent.contains("\"state\":\"Continue\""));
+        window.close();
     }
 
     void homeScreenAdaptsToNarrowWindowWidths()

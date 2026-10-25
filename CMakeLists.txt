@@ -76,6 +76,8 @@ if(BUILD_TESTING)
         src/application/capture_sequence_service.h
         src/application/capture_statistics_service.cpp
         src/application/capture_statistics_service.h
+        src/application/session_recovery_service.cpp
+        src/application/session_recovery_service.h
         src/application/session_service.cpp
         src/application/session_service.h
         src/domain/camera.h
@@ -94,6 +96,8 @@ if(BUILD_TESTING)
         src/infrastructure/storage/storage_layout.h
         src/infrastructure/storage/image_storage.cpp
         src/infrastructure/storage/image_storage.h
+        src/infrastructure/recovery/session_file_inspector.cpp
+        src/infrastructure/recovery/session_file_inspector.h
         src/infrastructure/logging/json_lines_logging_service.cpp
         src/infrastructure/logging/json_lines_logging_service.h
         src/presentation/capture_worker.cpp

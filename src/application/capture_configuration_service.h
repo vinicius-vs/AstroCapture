@@ -22,6 +22,8 @@ public:
     domain::CaptureRun configureSequence(
         const domain::SessionId& sessionId,
         domain::CaptureSettings settings);
+    std::optional<domain::CaptureRun> findCaptureRun(
+        const domain::CaptureRunId& captureRunId) const;
 
 private:
     void connectCamera();

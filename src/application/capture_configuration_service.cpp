@@ -122,4 +122,10 @@ domain::CaptureRun CaptureConfigurationService::configureSequence(
     return captureRun;
 }
 
+std::optional<domain::CaptureRun> CaptureConfigurationService::findCaptureRun(
+    const domain::CaptureRunId& captureRunId) const
+{
+    return captureRunRepository_.findById(captureRunId);
+}
+
 } // namespace application

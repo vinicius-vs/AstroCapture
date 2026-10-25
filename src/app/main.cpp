@@ -1,11 +1,13 @@
 #include "app/application_metadata.h"
 #include "application/capture_configuration_service.h"
+#include "application/session_recovery_service.h"
 #include "application/session_service.h"
 #include "domain/logging/log_event.h"
 #include "infrastructure/logging/json_lines_logging_service.h"
 #include "infrastructure/camera/simulated_camera.h"
 #include "infrastructure/persistence/sqlite_database.h"
 #include "infrastructure/persistence/sqlite_repositories.h"
+#include "infrastructure/recovery/session_file_inspector.h"
 #include "infrastructure/storage/storage_layout.h"
 #include "presentation/main_window.h"
 
@@ -44,10 +46,17 @@ int main(int argc, char* argv[])
 
         infrastructure::SqliteSessionRepository sessionRepository(database);
         infrastructure::SqliteCaptureRunRepository captureRunRepository(database);
+        infrastructure::SqliteFrameRepository frameRepository(database);
         infrastructure::SimulatedCamera simulatedCamera;
         infrastructure::StorageLayout storageLayout(
             QDir(dataDirectory).filePath(QStringLiteral("images")));
         application::SessionService sessionService(sessionRepository, storageLayout);
+        infrastructure::LocalSessionFileInspector sessionFileInspector;
+        application::SessionRecoveryService sessionRecoveryService(
+            captureRunRepository,
+            frameRepository,
+            sessionFileInspector,
+            *loggingService);
         application::CaptureConfigurationService captureConfigurationService(
             sessionRepository,
             captureRunRepository,
@@ -56,7 +65,8 @@ int main(int argc, char* argv[])
             sessionService,
             captureConfigurationService,
             simulatedCamera,
-            dataDirectory);
+            dataDirectory,
+            &sessionRecoveryService);
         window.show();
         return application.exec();
     } catch (const std::exception& error) {

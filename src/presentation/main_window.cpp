@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include "application/capture_configuration_service.h"
+#include "application/session_recovery_service.h"
 #include "application/session_service.h"
 #include "app/application_metadata.h"
 #include "presentation/capture_worker.h"
@@ -334,12 +335,14 @@ MainWindow::MainWindow(
     application::CaptureConfigurationService& captureConfigurationService,
     domain::ICamera& camera,
     QString applicationDataDirectory,
+    application::SessionRecoveryService* sessionRecoveryService,
     QWidget* parent)
     : QMainWindow(parent)
     , sessionService_(sessionService)
     , captureConfigurationService_(captureConfigurationService)
     , camera_(camera)
     , applicationDataDirectory_(std::move(applicationDataDirectory))
+    , sessionRecoveryService_(sessionRecoveryService)
 {
     setWindowTitle(applicationTitle());
     resize(1440, 900);
@@ -1413,6 +1416,10 @@ void MainWindow::openSession(const std::string& sessionId)
             QStringLiteral("Sessão aberta: %1 (%2)")
                 .arg(QString::fromStdString(record.session.name()), stageName(record.session.stage())));
         refreshSessions();
+        if (sessionRecoveryService_) {
+            inspectSessionRecovery(record);
+            return;
+        }
         showCaptureConfigurationPage(sessionId, false);
     } catch (const std::exception& error) {
         QMessageBox::warning(
@@ -1420,6 +1427,140 @@ void MainWindow::openSession(const std::string& sessionId)
             QStringLiteral("Não foi possível abrir a sessão"),
             QString::fromUtf8(error.what()));
     }
+}
+
+void MainWindow::inspectSessionRecovery(const domain::SessionRecord& session)
+{
+    const auto report = sessionRecoveryService_->inspect(
+        session,
+        sessionService_.sessionDirectory(session));
+    if (!report.requiresDecision()) {
+        showCaptureConfigurationPage(session.session.id(), false);
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("sessionRecoveryDialog"));
+    dialog.setWindowTitle(QStringLiteral("Retomar sessão"));
+    dialog.setModal(true);
+    dialog.setMinimumWidth(520);
+    dialog.resize(700, 480);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* summary = makeTextLabel(
+        QStringLiteral("Esta sessão tem sequências incompletas. Quadros concluídos não serão repetidos; "
+                       "quadros interrompidos permanecem inconclusivos."),
+        QStringLiteral("recoverySummary"),
+        &dialog);
+    summary->setWordWrap(true);
+    layout->addWidget(summary);
+
+    auto* runSelector = new QComboBox(&dialog);
+    runSelector->setObjectName(QStringLiteral("recoveryRunSelector"));
+    std::size_t totalPending = 0;
+    std::size_t totalInterrupted = 0;
+    for (const application::RecoverableCaptureRun& run : report.incompleteRuns) {
+        totalPending += run.pendingFrameIds.size();
+        totalInterrupted += run.interruptedFrameIds.size();
+        if (!run.canContinue) {
+            continue;
+        }
+        runSelector->addItem(
+            QStringLiteral("%1 · %2 pendente(s), %3 inconclusivo(s)")
+                .arg(QString::fromStdString(run.id))
+                .arg(run.pendingFrameIds.size())
+                .arg(run.interruptedFrameIds.size()),
+            QString::fromStdString(run.id));
+    }
+    std::size_t failedFrameCount = 0;
+    std::size_t fileIssueCount = 0;
+    for (const application::RecoveryFinding& finding : report.findings) {
+        if (finding.type == application::RecoveryFindingType::FailedFrame) {
+            ++failedFrameCount;
+        } else if (finding.type != application::RecoveryFindingType::PendingFrame
+                   && finding.type != application::RecoveryFindingType::InterruptedFrame) {
+            ++fileIssueCount;
+        }
+    }
+    layout->addWidget(makeTextLabel(
+        QStringLiteral(
+            "Pendentes: %1 · inconclusivos: %2 · quadros com falha: %3 · inconsistências nos arquivos: %4")
+            .arg(totalPending)
+            .arg(totalInterrupted)
+            .arg(failedFrameCount)
+            .arg(fileIssueCount),
+        {},
+        &dialog));
+    layout->addWidget(runSelector);
+
+    auto* findings = new QListWidget(&dialog);
+    findings->setObjectName(QStringLiteral("recoveryFindings"));
+    for (const application::RecoveryFinding& finding : report.findings) {
+        QString findingText = finding.details;
+        if (!finding.filePath.isEmpty()) {
+            findingText += QStringLiteral("\n%1").arg(finding.filePath);
+        } else if (finding.frameId) {
+            findingText += QStringLiteral("\nQuadro %1")
+                               .arg(QString::fromStdString(*finding.frameId));
+        }
+        findings->addItem(findingText);
+    }
+    if (report.findings.empty()) {
+        findings->addItem(QStringLiteral("Nenhuma inconsistência de arquivo encontrada."));
+    }
+    layout->addWidget(findings, 1);
+
+    auto* buttons = new QDialogButtonBox(&dialog);
+    auto* continueButton = buttons->addButton(
+        QStringLiteral("Continuar pendentes"),
+        QDialogButtonBox::AcceptRole);
+    continueButton->setObjectName(QStringLiteral("continueRecoveryButton"));
+    continueButton->setEnabled(runSelector->count() > 0);
+    auto* newSequenceButton = buttons->addButton(
+        QStringLiteral("Criar nova sequência"),
+        QDialogButtonBox::DestructiveRole);
+    newSequenceButton->setObjectName(QStringLiteral("newRecoverySequenceButton"));
+    auto* cancelButton = buttons->addButton(
+        QStringLiteral("Cancelar"),
+        QDialogButtonBox::RejectRole);
+    cancelButton->setObjectName(QStringLiteral("cancelRecoveryButton"));
+    layout->addWidget(buttons);
+
+    connect(continueButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(newSequenceButton, &QPushButton::clicked, &dialog, [&dialog] {
+        dialog.done(2);
+    });
+    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    const int choice = dialog.exec();
+    if (choice == QDialog::Accepted) {
+        const domain::CaptureRunId runId = runSelector->currentData().toString().toStdString();
+        const auto captureRun = captureConfigurationService_.findCaptureRun(runId);
+        if (!captureRun || !report.canContinue(runId)
+            || captureRun->state() == domain::CaptureRunState::Completed
+            || captureRun->state() == domain::CaptureRunState::Failed) {
+            throw std::runtime_error(
+                "A sequência selecionada não pode mais ser retomada; reabra a sessão.");
+        }
+        sessionRecoveryService_->recordDecision(
+            report,
+            application::RecoveryDecision::Continue,
+            runId);
+        showCaptureConfigurationPage(session.session.id(), false);
+        startCapture(*captureRun);
+        return;
+    }
+    if (choice == 2) {
+        sessionRecoveryService_->recordDecision(
+            report,
+            application::RecoveryDecision::NewSequence);
+        showCaptureConfigurationPage(session.session.id(), false);
+        return;
+    }
+
+    sessionRecoveryService_->recordDecision(
+        report,
+        application::RecoveryDecision::Cancel);
+    showSessionsPage();
 }
 
 void MainWindow::showSessionInformation(const std::string& sessionId)

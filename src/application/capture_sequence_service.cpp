@@ -66,6 +66,7 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
 
     std::vector<domain::Frame> completedFrames;
     std::vector<domain::FrameId> pendingFrameIds;
+    std::size_t existingFrameCount = existingFrames.size();
     for (const domain::Frame& frame : existingFrames) {
         if (frame.captureRunId() != captureRun_.id()
             || frame.type() != settings.frameType
@@ -85,8 +86,7 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
         case domain::FrameState::Transferring:
         case domain::FrameState::Validating:
         case domain::FrameState::Failed:
-            throw std::logic_error(
-                "Capture run contains a frame that requires recovery before continuing");
+            break;
         }
     }
 
@@ -161,7 +161,7 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
         }
 
         while (!stopRequested_->load()
-               && (!finite || completedCount < *plannedFrameCount)) {
+               && (!finite || existingFrameCount < *plannedFrameCount)) {
             domain::FrameId frameId;
             if (retryableFrameId_
                 && !frameRepository_.findById(*retryableFrameId_)) {
@@ -173,6 +173,7 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
                 } while (frameRepository_.findById(frameId));
             }
             executeFrame(frameId);
+            ++existingFrameCount;
         }
 
         if (stopRequested_->load()) {
@@ -189,11 +190,16 @@ std::vector<domain::Frame> CaptureSequenceService::execute(
                 captureRun_.pause();
             }
             stopRequested_->store(false);
-        } else if (finite) {
+        } else if (finite && completedCount == *plannedFrameCount) {
             captureRunRepository_.updateState(
                 captureRun_.id(),
                 domain::CaptureRunState::Completed);
             captureRun_.complete();
+        } else if (finite) {
+            captureRunRepository_.updateState(
+                captureRun_.id(),
+                domain::CaptureRunState::Paused);
+            captureRun_.pause();
         } else {
             throw std::logic_error("Continuous capture ended without a stop request");
         }

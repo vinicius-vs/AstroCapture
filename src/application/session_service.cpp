@@ -93,6 +93,12 @@ domain::Target SessionService::targetForSession(const domain::SessionId& session
     return *target;
 }
 
+QString SessionService::sessionDirectory(const domain::SessionRecord& session) const
+{
+    const domain::Target target = targetForSession(session.session.id());
+    return storageLayout_.sessionDirectory(target, session.session);
+}
+
 void SessionService::deleteSession(const domain::SessionId& sessionId)
 {
     const auto record = sessionRepository_.findById(sessionId);

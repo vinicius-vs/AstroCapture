@@ -23,6 +23,7 @@ public:
         domain::SessionStage stage);
     domain::SessionRecord openSession(const domain::SessionId& sessionId);
     domain::Target targetForSession(const domain::SessionId& sessionId) const;
+    QString sessionDirectory(const domain::SessionRecord& session) const;
     void deleteSession(const domain::SessionId& sessionId);
 
 private:

@@ -22,11 +22,13 @@ class QWidget;
 
 namespace application {
 class CaptureConfigurationService;
+class SessionRecoveryService;
 class SessionService;
 }
 
 namespace domain {
 class CaptureRun;
+struct SessionRecord;
 }
 
 class MainWindow final : public QMainWindow
@@ -37,6 +39,7 @@ public:
         application::CaptureConfigurationService& captureConfigurationService,
         domain::ICamera& camera,
         QString applicationDataDirectory,
+        application::SessionRecoveryService* sessionRecoveryService = nullptr,
         QWidget* parent = nullptr);
 
 private:
@@ -46,6 +49,7 @@ private:
     void openSessionConfigurationDialog();
     void showCaptureConfigurationPage(const std::string& sessionId, bool returnHome);
     void startCapture(domain::CaptureRun captureRun);
+    void inspectSessionRecovery(const domain::SessionRecord& session);
     void requestCaptureStop();
     void openSession(const std::string& sessionId);
     void showSessionInformation(const std::string& sessionId);
@@ -59,6 +63,7 @@ private:
     application::CaptureConfigurationService& captureConfigurationService_;
     domain::ICamera& camera_;
     QString applicationDataDirectory_;
+    application::SessionRecoveryService* sessionRecoveryService_{};
     QStackedWidget* pages_{};
     QWidget* homePage_{};
     QWidget* sessionsPage_{};
