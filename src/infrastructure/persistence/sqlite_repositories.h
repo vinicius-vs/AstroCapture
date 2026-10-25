@@ -45,8 +45,11 @@ class SqliteFrameRepository final : public domain::FrameRepository
 public:
     explicit SqliteFrameRepository(SqliteDatabase& database);
 
+    void create(const domain::Frame& frame) override;
+    std::optional<domain::Frame> findById(const domain::FrameId& id) const override;
     std::vector<domain::Frame> findByCaptureRunId(
         const domain::CaptureRunId& captureRunId) const override;
+    void update(const domain::Frame& frame) override;
 
 private:
     SqliteDatabase& database_;

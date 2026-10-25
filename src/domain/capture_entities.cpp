@@ -206,6 +206,9 @@ CaptureRun CaptureRun::restore(
         break;
     case CaptureRunState::Completed:
         run.start();
+        if (run.settings_.mode == CaptureMode::Continuous) {
+            run.requestStop();
+        }
         run.complete();
         break;
     case CaptureRunState::Failed:

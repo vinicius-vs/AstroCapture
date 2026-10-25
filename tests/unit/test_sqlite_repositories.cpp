@@ -204,6 +204,7 @@ private slots:
                     1});
             runs.create(earlierRun);
             runs.create(run);
+            SqliteFrameRepository frames(database);
 
             const auto restored = runs.findById(run.id());
             QVERIFY(restored.has_value());
@@ -231,6 +232,54 @@ private slots:
             runs.updateState(earlierRun.id(), CaptureRunState::Running);
             runs.updateState(earlierRun.id(), CaptureRunState::Completed);
             QCOMPARE(runs.findById(earlierRun.id())->state(), CaptureRunState::Completed);
+
+            Frame frame("frame-1", run.id(), FrameType::DarkFlat, 5s, 800);
+            frames.create(frame);
+            QVERIFY_EXCEPTION_THROWN(frames.create(frame), RepositoryError);
+            QCOMPARE(frames.findById(frame.id())->state(), FrameState::Pending);
+
+            frame.startExposure(Timestamp{2s});
+            frames.update(frame);
+            QCOMPARE(frames.findById(frame.id())->state(), FrameState::Exposing);
+            frame.startTransfer();
+            frames.update(frame);
+            QCOMPARE(frames.findById(frame.id())->state(), FrameState::Transferring);
+            frame.startValidation();
+            frames.update(frame);
+            QCOMPARE(frames.findById(frame.id())->state(), FrameState::Validating);
+            frame.completeValidation("images/frame-1.CR2", 4096);
+            frames.update(frame);
+
+            const auto completedFrame = frames.findById(frame.id());
+            QVERIFY(completedFrame.has_value());
+            QCOMPARE(completedFrame->state(), FrameState::Completed);
+            QCOMPARE(completedFrame->filePath(), std::optional<std::filesystem::path>("images/frame-1.CR2"));
+            QCOMPARE(completedFrame->fileSize(), std::optional<std::uint64_t>{4096});
+
+            Frame failedFrame("frame-2", run.id(), FrameType::DarkFlat);
+            frames.create(failedFrame);
+            failedFrame.startExposure(Timestamp{3s});
+            frames.update(failedFrame);
+            failedFrame.fail("simulated exposure failure");
+            frames.update(failedFrame);
+            QCOMPARE(frames.findById(failedFrame.id())->state(), FrameState::Failed);
+            failedFrame.retry();
+            frames.update(failedFrame);
+            QCOMPARE(frames.findById(failedFrame.id())->state(), FrameState::Pending);
+
+            auto invalidTransition = Frame::restore(
+                "frame-1",
+                run.id(),
+                FrameType::DarkFlat,
+                FrameState::Failed,
+                5s,
+                800,
+                Timestamp{2s},
+                std::nullopt,
+                std::nullopt,
+                "invalid direct failure");
+            QVERIFY_EXCEPTION_THROWN(frames.update(invalidTransition), std::logic_error);
+            QCOMPARE(frames.findById(frame.id())->state(), FrameState::Completed);
         }
 
         SqliteDatabase reopenedDatabase(databasePath);
@@ -240,6 +289,11 @@ private slots:
         QVERIFY(restored.has_value());
         QCOMPARE(restored->state(), CaptureRunState::Completed);
         QCOMPARE(reopenedRuns.findBySessionId(session.id()).size(), std::size_t{2});
+        SqliteFrameRepository reopenedFrames(reopenedDatabase);
+        const auto restoredFrame = reopenedFrames.findById("frame-1");
+        QVERIFY(restoredFrame.has_value());
+        QCOMPARE(restoredFrame->state(), FrameState::Completed);
+        QCOMPARE(restoredFrame->fileSize(), std::optional<std::uint64_t>{4096});
     }
 
     void supportsContinuousRunsAndRejectsInvalidStateChanges()
@@ -270,6 +324,9 @@ private slots:
         QVERIFY(!runs.findById("run-1")->settings().plannedFrameCount.has_value());
 
         QVERIFY_EXCEPTION_THROWN(runs.updateState("missing", CaptureRunState::Running), RepositoryNotFoundError);
+        QVERIFY_EXCEPTION_THROWN(
+            runs.updateState("run-1", static_cast<CaptureRunState>(99)),
+            std::invalid_argument);
         QVERIFY_EXCEPTION_THROWN(runs.updateState("run-1", CaptureRunState::Completed), std::logic_error);
         QCOMPARE(runs.findById("run-1")->state(), CaptureRunState::Ready);
         runs.updateState("run-1", CaptureRunState::Running);

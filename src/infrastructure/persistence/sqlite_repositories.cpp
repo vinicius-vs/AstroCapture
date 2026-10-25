@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -174,6 +175,25 @@ FrameState frameStateFromName(const QString& value)
         return FrameState::Failed;
     }
     throw RepositoryError("Database contains an unknown frame state");
+}
+
+QString frameStateName(FrameState state)
+{
+    switch (state) {
+    case FrameState::Pending:
+        return QStringLiteral("Pending");
+    case FrameState::Exposing:
+        return QStringLiteral("Exposing");
+    case FrameState::Transferring:
+        return QStringLiteral("Transferring");
+    case FrameState::Validating:
+        return QStringLiteral("Validating");
+    case FrameState::Completed:
+        return QStringLiteral("Completed");
+    case FrameState::Failed:
+        return QStringLiteral("Failed");
+    }
+    throw std::invalid_argument("Invalid frame state");
 }
 
 QString captureModeName(CaptureMode mode)
@@ -499,8 +519,72 @@ CaptureRun applyStateTransition(CaptureRun captureRun, CaptureRunState desiredSt
     case CaptureRunState::Failed:
         captureRun.fail();
         break;
+    default:
+        throw std::invalid_argument("Invalid capture run state");
     }
     return captureRun;
+}
+
+Frame applyFrameTransition(const Frame& previous, const Frame& updated)
+{
+    if (previous.id() != updated.id()
+        || previous.captureRunId() != updated.captureRunId()
+        || previous.type() != updated.type()
+        || previous.exposure() != updated.exposure()
+        || previous.iso() != updated.iso()) {
+        throw std::invalid_argument("Frame identity and capture settings cannot be changed");
+    }
+
+    Frame result = previous;
+    if (previous.state() == updated.state()) {
+        if (previous.capturedAt() == updated.capturedAt()
+            && previous.filePath() == updated.filePath()
+            && previous.fileSize() == updated.fileSize()
+            && previous.errorMessage() == updated.errorMessage()) {
+            return result;
+        }
+        throw std::logic_error("Frame data cannot change without a state transition");
+    }
+
+    switch (updated.state()) {
+    case FrameState::Pending:
+        result.retry();
+        break;
+    case FrameState::Exposing:
+        if (!updated.capturedAt()) {
+            throw std::invalid_argument("Exposing frames require a capture timestamp");
+        }
+        result.startExposure(*updated.capturedAt());
+        break;
+    case FrameState::Transferring:
+        result.startTransfer();
+        break;
+    case FrameState::Validating:
+        result.startValidation();
+        break;
+    case FrameState::Completed:
+        if (!updated.filePath() || !updated.fileSize()) {
+            throw std::invalid_argument("Completed frames require persisted file metadata");
+        }
+        result.completeValidation(*updated.filePath(), *updated.fileSize());
+        break;
+    case FrameState::Failed:
+        if (!updated.errorMessage()) {
+            throw std::invalid_argument("Failed frames require an error message");
+        }
+        result.fail(*updated.errorMessage());
+        break;
+    default:
+        throw std::invalid_argument("Invalid frame state");
+    }
+
+    if (result.capturedAt() != updated.capturedAt()
+        || result.filePath() != updated.filePath()
+        || result.fileSize() != updated.fileSize()
+        || result.errorMessage() != updated.errorMessage()) {
+        throw std::invalid_argument("Frame update does not match a valid state transition");
+    }
+    return result;
 }
 
 } // namespace
@@ -718,6 +802,55 @@ SqliteFrameRepository::SqliteFrameRepository(SqliteDatabase& database)
 {
 }
 
+void SqliteFrameRepository::create(const Frame& frame)
+{
+    if (frame.state() != FrameState::Pending) {
+        throw std::invalid_argument("New frames must be created in Pending state");
+    }
+
+    QSqlQuery query(database_.connection());
+    if (!query.prepare(QStringLiteral(
+            "INSERT INTO frames "
+            "(id, capture_run_id, type, state, exposure_microseconds, iso, captured_at, "
+            "file_path, file_size, error_message) "
+            "VALUES (:id, :capture_run_id, :type, :state, :exposure, :iso, NULL, NULL, NULL, NULL)"))) {
+        throwQueryError(query, QStringLiteral("Preparing frame insert failed"));
+    }
+    query.bindValue(QStringLiteral(":id"), text(frame.id()));
+    query.bindValue(QStringLiteral(":capture_run_id"), text(frame.captureRunId()));
+    query.bindValue(QStringLiteral(":type"), frameTypeName(frame.type()));
+    query.bindValue(QStringLiteral(":state"), frameStateName(frame.state()));
+    if (frame.exposure()) {
+        query.bindValue(
+            QStringLiteral(":exposure"),
+            static_cast<qlonglong>(frame.exposure()->count()));
+    } else {
+        query.bindValue(QStringLiteral(":exposure"), QVariant{});
+    }
+    if (frame.iso()) {
+        query.bindValue(QStringLiteral(":iso"), *frame.iso());
+    } else {
+        query.bindValue(QStringLiteral(":iso"), QVariant{});
+    }
+    execute(database_, query, QStringLiteral("Creating frame failed"));
+}
+
+std::optional<Frame> SqliteFrameRepository::findById(const FrameId& id) const
+{
+    QSqlQuery query(database_.connection());
+    if (!query.prepare(QStringLiteral(
+            "SELECT id, capture_run_id, type, state, exposure_microseconds, iso, captured_at, "
+            "file_path, file_size, error_message FROM frames WHERE id = :id"))) {
+        throwQueryError(query, QStringLiteral("Preparing frame query failed"));
+    }
+    query.bindValue(QStringLiteral(":id"), text(id));
+    execute(database_, query, QStringLiteral("Querying frame failed"));
+    if (!next(query, QStringLiteral("Reading frame result failed"))) {
+        return std::nullopt;
+    }
+    return frameFromQuery(query);
+}
+
 std::vector<Frame> SqliteFrameRepository::findByCaptureRunId(
     const CaptureRunId& captureRunId) const
 {
@@ -736,6 +869,75 @@ std::vector<Frame> SqliteFrameRepository::findByCaptureRunId(
         frames.push_back(frameFromQuery(query));
     }
     return frames;
+}
+
+void SqliteFrameRepository::update(const Frame& frame)
+{
+    QSqlDatabase connection = database_.connection();
+    beginTransaction(connection);
+    try {
+        const auto previous = findById(frame.id());
+        if (!previous) {
+            throw RepositoryNotFoundError("Frame does not exist");
+        }
+        const Frame updated = applyFrameTransition(*previous, frame);
+        if (updated.state() == previous->state()) {
+            commitTransaction(connection);
+            return;
+        }
+        if (updated.fileSize()
+            && *updated.fileSize() > static_cast<std::uint64_t>(std::numeric_limits<qlonglong>::max())) {
+            throw std::invalid_argument("Frame file size exceeds SQLite integer range");
+        }
+
+        QSqlQuery query(database_.connection());
+        if (!query.prepare(QStringLiteral(
+                "UPDATE frames SET state = :state, captured_at = :captured_at, "
+                "file_path = :file_path, file_size = :file_size, error_message = :error_message "
+                "WHERE id = :id AND state = :previous_state"))) {
+            throwQueryError(query, QStringLiteral("Preparing frame state update failed"));
+        }
+        query.bindValue(QStringLiteral(":state"), frameStateName(updated.state()));
+        if (updated.capturedAt()) {
+            query.bindValue(QStringLiteral(":captured_at"), timestampToString(*updated.capturedAt()));
+        } else {
+            query.bindValue(QStringLiteral(":captured_at"), QVariant{});
+        }
+        if (updated.filePath()) {
+            query.bindValue(
+                QStringLiteral(":file_path"),
+                QString::fromStdString(updated.filePath()->string()));
+        } else {
+            query.bindValue(QStringLiteral(":file_path"), QVariant{});
+        }
+        if (updated.fileSize()) {
+            query.bindValue(QStringLiteral(":file_size"), static_cast<qlonglong>(*updated.fileSize()));
+        } else {
+            query.bindValue(QStringLiteral(":file_size"), QVariant{});
+        }
+        if (updated.errorMessage()) {
+            query.bindValue(
+                QStringLiteral(":error_message"),
+                QString::fromStdString(*updated.errorMessage()));
+        } else {
+            query.bindValue(QStringLiteral(":error_message"), QVariant{});
+        }
+        query.bindValue(QStringLiteral(":id"), text(updated.id()));
+        query.bindValue(QStringLiteral(":previous_state"), frameStateName(previous->state()));
+        execute(database_, query, QStringLiteral("Updating frame state failed"));
+        if (query.numRowsAffected() != 1) {
+            throw RepositoryConflictError("Frame changed concurrently while updating its state");
+        }
+        commitTransaction(connection);
+    } catch (const std::exception& error) {
+        const std::string operationError = error.what();
+        try {
+            rollbackTransaction(connection);
+        } catch (const std::exception& rollbackError) {
+            throw RepositoryError(operationError + "; " + rollbackError.what());
+        }
+        throw;
+    }
 }
 
 } // namespace infrastructure

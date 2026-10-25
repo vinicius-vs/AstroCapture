@@ -91,11 +91,21 @@ private slots:
             finiteSettings());
 
         QCOMPARE(run.state(), CaptureRunState::Ready);
+        QVERIFY_EXCEPTION_THROWN(run.requestStop(), std::logic_error);
+        QVERIFY_EXCEPTION_THROWN(run.pause(), std::logic_error);
+        QVERIFY_EXCEPTION_THROWN(run.resume(), std::logic_error);
+        QVERIFY_EXCEPTION_THROWN(run.complete(), std::logic_error);
+        QVERIFY_EXCEPTION_THROWN(run.fail(), std::logic_error);
+
         run.start();
+        QVERIFY_EXCEPTION_THROWN(run.start(), std::logic_error);
         run.requestStop();
+        QVERIFY_EXCEPTION_THROWN(run.requestStop(), std::logic_error);
         run.pause();
         QCOMPARE(run.state(), CaptureRunState::Paused);
+        QVERIFY_EXCEPTION_THROWN(run.pause(), std::logic_error);
         run.resume();
+        QVERIFY_EXCEPTION_THROWN(run.resume(), std::logic_error);
         run.complete();
         QCOMPARE(run.state(), CaptureRunState::Completed);
         QVERIFY_EXCEPTION_THROWN(run.start(), std::logic_error);
@@ -137,6 +147,20 @@ private slots:
                 finiteSettings(),
                 static_cast<CaptureRunState>(99)),
             std::invalid_argument);
+
+        const auto completedContinuousRun = CaptureRun::restore(
+                "run-3",
+                "session-1",
+                std::chrono::year{2026} / 10 / 18,
+                CaptureSettings{
+                    FrameType::Light,
+                    1s,
+                    std::nullopt,
+                    CaptureMode::Continuous,
+                    std::nullopt
+                },
+                CaptureRunState::Completed);
+        QCOMPARE(completedContinuousRun.state(), CaptureRunState::Completed);
     }
 
     void continuousCaptureRunCannotBeCompletedWithoutACompletionCondition()
@@ -264,6 +288,25 @@ private slots:
         QCOMPARE(frame.state(), FrameState::Pending);
         QVERIFY(!frame.capturedAt().has_value());
         QVERIFY(!frame.errorMessage().has_value());
+    }
+
+    void frameRejectsInvalidTransitionsAndOnlyRetriesFailures()
+    {
+        Frame frame("frame-1", "run-1", FrameType::Light);
+
+        QVERIFY_EXCEPTION_THROWN(frame.startTransfer(), std::logic_error);
+        QVERIFY_EXCEPTION_THROWN(frame.startValidation(), std::logic_error);
+        QVERIFY_EXCEPTION_THROWN(frame.fail("failure"), std::logic_error);
+        QVERIFY_EXCEPTION_THROWN(frame.retry(), std::logic_error);
+
+        frame.startExposure(Timestamp{1s});
+        frame.startTransfer();
+        frame.startValidation();
+        frame.completeValidation("images/frame.cr2", 1024);
+
+        QVERIFY_EXCEPTION_THROWN(frame.fail("failure"), std::logic_error);
+        QVERIFY_EXCEPTION_THROWN(frame.retry(), std::logic_error);
+        QCOMPARE(frame.state(), FrameState::Completed);
     }
 };
 
