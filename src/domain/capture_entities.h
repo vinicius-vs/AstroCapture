@@ -8,6 +8,9 @@
 
 namespace domain {
 
+struct CameraCapabilities;
+struct CameraSettings;
+
 using TargetId = std::string;
 using SessionId = std::string;
 using CaptureRunId = std::string;
@@ -108,6 +111,9 @@ struct CaptureSettings
     std::optional<std::uint32_t> plannedFrameCount;
 
     void validate() const;
+    void validate(
+        const CameraCapabilities& capabilities,
+        const CameraSettings& currentSettings) const;
 };
 
 class CaptureRun final

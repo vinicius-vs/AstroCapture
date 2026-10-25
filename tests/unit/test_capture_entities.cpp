@@ -1,4 +1,5 @@
 #include "domain/capture_entities.h"
+#include "domain/camera.h"
 
 #include <QtTest>
 
@@ -80,6 +81,70 @@ private slots:
             2
         };
         QVERIFY_EXCEPTION_THROWN(continuousWithCount.validate(), std::invalid_argument);
+    }
+
+    void captureSettingsValidateAgainstCameraCapabilities()
+    {
+        const CaptureSettings settings = finiteSettings();
+        CameraCapabilities capabilities;
+        capabilities.exposure.state = CapabilityState::Supported;
+        capabilities.exposure.minimum = 1s;
+        capabilities.exposure.maximum = 30s;
+        capabilities.iso.state = CapabilityState::Supported;
+        capabilities.iso.values = {100, 400, 800};
+
+        settings.validate(capabilities, CameraSettings{5s, 800});
+
+        CameraCapabilities unsupportedExposure = capabilities;
+        unsupportedExposure.exposure.state = CapabilityState::Unavailable;
+        QVERIFY_EXCEPTION_THROWN(
+            settings.validate(unsupportedExposure, CameraSettings{5s, 800}),
+            std::invalid_argument);
+
+        CameraCapabilities readOnlyExposure = capabilities;
+        readOnlyExposure.exposure.state = CapabilityState::ReadOnly;
+        settings.validate(readOnlyExposure, CameraSettings{5s, 800});
+        QVERIFY_EXCEPTION_THROWN(
+            settings.validate(readOnlyExposure, CameraSettings{10s, 800}),
+            std::invalid_argument);
+        QVERIFY_EXCEPTION_THROWN(
+            settings.validate(readOnlyExposure, CameraSettings{std::nullopt, 800}),
+            std::invalid_argument);
+
+        const CaptureSettings unsupportedExposureValue{
+            FrameType::Light,
+            31s,
+            800,
+            CaptureMode::Finite,
+            3
+        };
+        QVERIFY_EXCEPTION_THROWN(
+            unsupportedExposureValue.validate(capabilities, CameraSettings{5s, 800}),
+            std::invalid_argument);
+        const CaptureSettings unsupportedIsoValue{
+            FrameType::Light,
+            5s,
+            200,
+            CaptureMode::Finite,
+            3
+        };
+        QVERIFY_EXCEPTION_THROWN(
+            unsupportedIsoValue.validate(capabilities, CameraSettings{5s, 800}),
+            std::invalid_argument);
+
+        CameraCapabilities unsupportedIso = capabilities;
+        unsupportedIso.iso.state = CapabilityState::Unavailable;
+        const CaptureSettings withoutIso{
+            FrameType::Dark,
+            5s,
+            std::nullopt,
+            CaptureMode::Finite,
+            1
+        };
+        withoutIso.validate(unsupportedIso, CameraSettings{5s, std::nullopt});
+        QVERIFY_EXCEPTION_THROWN(
+            settings.validate(unsupportedIso, CameraSettings{5s, 800}),
+            std::invalid_argument);
     }
 
     void captureRunOnlyAllowsDocumentedTransitions()

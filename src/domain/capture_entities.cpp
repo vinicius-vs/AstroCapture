@@ -1,5 +1,7 @@
 #include "domain/capture_entities.h"
+#include "domain/camera.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -49,6 +51,42 @@ void requireFrameState(FrameState actual, FrameState expected)
 {
     if (actual != expected) {
         throw std::logic_error("Invalid frame state transition");
+    }
+}
+
+template<typename T>
+void validateSetting(
+    const char* name,
+    const T& requested,
+    const std::optional<T>& current,
+    const SettingCapability<T>& capability)
+{
+    if (capability.state == CapabilityState::Unavailable) {
+        throw std::invalid_argument(std::string("Camera does not support ") + name);
+    }
+    if (capability.state != CapabilityState::Supported
+        && capability.state != CapabilityState::ReadOnly) {
+        throw std::invalid_argument(std::string("Camera reported an invalid capability for ") + name);
+    }
+    if ((capability.minimum && requested < *capability.minimum)
+        || (capability.maximum && requested > *capability.maximum)) {
+        throw std::invalid_argument(
+            std::string("Requested ") + name + " is outside the camera's supported range");
+    }
+    if (!capability.values.empty()
+        && std::find(capability.values.begin(), capability.values.end(), requested) == capability.values.end()) {
+        throw std::invalid_argument(
+            std::string("Requested ") + name + " is not supported by the camera");
+    }
+    if (capability.state == CapabilityState::ReadOnly) {
+        if (!current) {
+            throw std::invalid_argument(
+                std::string("Current camera ") + name + " is unavailable for a read-only setting");
+        }
+        if (requested != *current) {
+            throw std::invalid_argument(
+                std::string("Camera ") + name + " is read-only and differs from the requested value");
+        }
     }
 }
 
@@ -161,6 +199,25 @@ void CaptureSettings::validate() const
         }
     } else if (plannedFrameCount) {
         throw std::invalid_argument("Continuous captures must not have a planned frame count");
+    }
+}
+
+void CaptureSettings::validate(
+    const CameraCapabilities& capabilities,
+    const CameraSettings& currentSettings) const
+{
+    validate();
+    validateSetting(
+        "exposure",
+        exposure,
+        currentSettings.exposure,
+        capabilities.exposure);
+    if (iso) {
+        validateSetting(
+            "ISO",
+            *iso,
+            currentSettings.iso,
+            capabilities.iso);
     }
 }
 

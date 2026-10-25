@@ -6,6 +6,7 @@
 #include <QSqlError>
 #include <QSqlQuery>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -334,6 +335,43 @@ private slots:
         runs.updateState("run-1", CaptureRunState::Failed);
         QVERIFY_EXCEPTION_THROWN(runs.updateState("run-1", CaptureRunState::Running), std::logic_error);
         QCOMPARE(runs.findById("run-1")->state(), CaptureRunState::Failed);
+    }
+
+    void persistsEveryFrameTypeForRunsAndFrames()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        SqliteDatabase database(
+            QDir(directory.path()).filePath(QStringLiteral("repository.sqlite3")));
+        database.open();
+        SqliteSessionRepository sessions(database);
+        const Target target("target-1", "M42");
+        const Session session = makeSession(target, "session-1");
+        sessions.create(target, session);
+        SqliteCaptureRunRepository runs(database);
+        SqliteFrameRepository frames(database);
+
+        const std::array<FrameType, 5> frameTypes{
+            FrameType::Light,
+            FrameType::Dark,
+            FrameType::Flat,
+            FrameType::Bias,
+            FrameType::DarkFlat
+        };
+        for (std::size_t index = 0; index < frameTypes.size(); ++index) {
+            const std::string suffix = std::to_string(index);
+            const CaptureRun run(
+                "run-" + suffix,
+                session.id(),
+                std::chrono::year{2026} / 10 / 24,
+                CaptureSettings{frameTypes[index], 1s, std::nullopt, CaptureMode::Finite, 1});
+            runs.create(run);
+            QCOMPARE(runs.findById(run.id())->settings().frameType, frameTypes[index]);
+
+            const Frame frame("frame-" + suffix, run.id(), frameTypes[index]);
+            frames.create(frame);
+            QCOMPARE(frames.findById(frame.id())->type(), frameTypes[index]);
+        }
     }
 };
 

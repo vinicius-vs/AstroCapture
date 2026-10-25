@@ -211,6 +211,8 @@ Antes de executar a sequência, validar:
 
 Parâmetros incompatíveis devem ser apresentados ao usuário antes do início da captura.
 
+Quando um parâmetro for `Supported`, validar os limites e valores discretos informados pela câmera. Parâmetros `Unavailable` não podem ser solicitados. Para parâmetros `ReadOnly`, somente aceitar o valor atual informado pela câmera; se o valor atual não estiver disponível ou for diferente do solicitado, rejeitar a sequência antes de iniciá-la. Parâmetros opcionais não solicitados, como ISO omitido, não exigem suporte da câmera.
+
 ## 8. Execução da captura
 
 A captura deve ocorrer fora da thread principal da interface gráfica. A comunicação com a câmera deve ser serializada para evitar chamadas concorrentes ao `libgphoto2`.
