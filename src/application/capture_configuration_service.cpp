@@ -75,6 +75,15 @@ domain::CameraSettings CaptureConfigurationService::currentCameraSettings()
     return valueOrThrow(camera_.settings(), "Não foi possível consultar as configurações da câmera");
 }
 
+domain::CameraCapabilities CaptureConfigurationService::reconnectCamera()
+{
+    cameraConnected_ = false;
+    connectCamera();
+    return valueOrThrow(
+        camera_.capabilities(),
+        "Não foi possível consultar os recursos da câmera após reconectar");
+}
+
 domain::CaptureRun CaptureConfigurationService::configureSequence(
     const domain::SessionId& sessionId,
     domain::CaptureSettings settings)

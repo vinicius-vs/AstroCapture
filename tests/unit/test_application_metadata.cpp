@@ -31,6 +31,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -294,6 +295,15 @@ private slots:
         auto* status =
             window.findChild<QLabel*>(QStringLiteral("captureConfigurationStatus"));
         QVERIFY(status);
+        QVERIFY(!window.findChild<QThread*>(QStringLiteral("captureExecutionThread")));
+        const auto pendingFrames = frameRepository.findByCaptureRunId(captureRun.id());
+        QCOMPARE(pendingFrames.size(), std::size_t{2});
+        QCOMPARE(pendingFrames[1].state(), domain::FrameState::Pending);
+        auto* continueCaptureButton =
+            window.findChild<QPushButton*>(QStringLiteral("startCaptureButton"));
+        QVERIFY(continueCaptureButton);
+        QCOMPARE(continueCaptureButton->text(), QStringLiteral("▶  Continuar Captura"));
+        continueCaptureButton->click();
         QTRY_VERIFY2_WITH_TIMEOUT(
             status->text().contains(QStringLiteral("Captura concluída")),
             qPrintable(status->text()),
@@ -338,6 +348,7 @@ private slots:
         application::CaptureConfigurationService captureConfigurationService(
             repository, captureRunRepository, camera);
         MainWindow window(service, captureConfigurationService, camera, directory.path());
+        window.setMinimumSize(0, 0);
 
         auto* sidebar = window.findChild<QFrame*>(QStringLiteral("sidebar"));
         auto* homePage = window.findChild<QScrollArea*>(QStringLiteral("homePage"));
@@ -812,18 +823,67 @@ private slots:
         QCOMPARE(pages->currentWidget()->objectName(), QStringLiteral("captureConfigurationPage"));
         QVERIFY(!QApplication::activeModalWidget());
         window.show();
-        window.resize(320, 320);
+        QCOMPARE(window.minimumSize(), QSize(1024, 720));
+        window.resize(window.minimumSize());
         QCoreApplication::processEvents();
         auto* captureScroll = qobject_cast<QScrollArea*>(pages->currentWidget());
         QVERIFY(captureScroll);
         QCOMPARE(captureScroll->widget()->width(), captureScroll->viewport()->width());
         QCOMPARE(captureScroll->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff);
+        QVERIFY(captureScroll->widget()->height() <= captureScroll->viewport()->height());
         auto* capturePage = pages->currentWidget();
+        const auto frameButtons =
+            capturePage->findChildren<QPushButton*>(QStringLiteral("frameTypeButton"));
+        QCOMPARE(frameButtons.size(), 5);
+        auto* frameTypeGrid =
+            capturePage->findChild<QGridLayout*>(QStringLiteral("frameTypeGrid"));
+        QVERIFY(frameTypeGrid);
+        auto* captureModeCard =
+            capturePage->findChild<QFrame*>(QStringLiteral("captureModeCard"));
+        auto* sessionStatisticsCard =
+            capturePage->findChild<QFrame*>(QStringLiteral("sessionStatisticsCard"));
+        auto* captureStatusLabel =
+            capturePage->findChild<QLabel*>(QStringLiteral("captureConfigurationStatus"));
+        QVERIFY(captureModeCard);
+        QVERIFY(sessionStatisticsCard);
+        QVERIFY(captureStatusLabel);
+        QCOMPARE(sessionStatisticsCard->width(), sessionStatisticsCard->parentWidget()->width());
+        QVERIFY(sessionStatisticsCard->height() < sessionStatisticsCard->parentWidget()->height());
+        QCOMPARE(captureModeCard->layout()->count(), 3);
+        QCOMPARE(sessionStatisticsCard->layout()->count(), 2);
+        auto* captureFeedbackCard =
+            capturePage->findChild<QFrame*>(QStringLiteral("captureFeedbackCard"));
+        QVERIFY(captureFeedbackCard);
+        QCOMPARE(captureStatusLabel->parentWidget(), captureFeedbackCard);
+        QVERIFY(!capturePage->findChild<QProgressBar*>(QStringLiteral("captureProgressBar")));
+        QVERIFY(!capturePage->findChild<QLabel*>(QStringLiteral("captureSequenceMetrics")));
+        QVERIFY(!capturePage->findChild<QLabel*>(QStringLiteral("captureElapsedTime")));
+        for (int column = 0; column < frameButtons.size(); ++column) {
+            int row = -1;
+            int actualColumn = -1;
+            int rowSpan = 0;
+            int columnSpan = 0;
+            frameTypeGrid->getItemPosition(
+                frameTypeGrid->indexOf(frameButtons.at(column)),
+                &row,
+                &actualColumn,
+                &rowSpan,
+                &columnSpan);
+            QCOMPARE(row, 0);
+            QCOMPARE(actualColumn, column);
+        }
+        for (const QPushButton* button : frameButtons) {
+            QCOMPARE(button->minimumHeight(), 34);
+        }
+        auto* liveViewImage = capturePage->findChild<QLabel*>(QStringLiteral("liveViewImage"));
+        QVERIFY(liveViewImage);
+        QCOMPARE(liveViewImage->minimumHeight(), 130);
         auto* cameraInput = capturePage->findChild<QComboBox*>(QStringLiteral("captureCameraInput"));
         auto* frameTypeInput = capturePage->findChild<QComboBox*>(QStringLiteral("frameTypeInput"));
         auto* modeInput = capturePage->findChild<QComboBox*>(QStringLiteral("captureModeInput"));
         auto* exposureInput = capturePage->findChild<QDoubleSpinBox*>(QStringLiteral("exposureInput"));
         auto* isoInput = capturePage->findChild<QComboBox*>(QStringLiteral("isoInput"));
+        auto* apertureInput = capturePage->findChild<QComboBox*>(QStringLiteral("apertureInput"));
         auto* countInput = capturePage->findChild<QSpinBox*>(QStringLiteral("frameCountInput"));
         auto* prepareButton = capturePage->findChild<QPushButton*>(QStringLiteral("startCaptureButton"));
         QVERIFY(cameraInput);
@@ -835,8 +895,47 @@ private slots:
         QVERIFY(modeInput);
         QVERIFY(exposureInput);
         QVERIFY(isoInput);
+        QVERIFY(apertureInput);
+        QVERIFY(!apertureInput->isEnabled());
+        auto* isoSettingLabel =
+            capturePage->findChild<QLabel*>(QStringLiteral("isoSettingLabel"));
+        auto* exposureSettingLabel =
+            capturePage->findChild<QLabel*>(QStringLiteral("exposureSettingLabel"));
+        auto* apertureSettingLabel =
+            capturePage->findChild<QLabel*>(QStringLiteral("apertureSettingLabel"));
+        QVERIFY(isoSettingLabel);
+        QVERIFY(exposureSettingLabel);
+        QVERIFY(apertureSettingLabel);
+        QCOMPARE(
+            isoSettingLabel->text(), QStringLiteral("ISO"));
+        QCOMPARE(
+            exposureSettingLabel->text(), QStringLiteral("Exposição"));
+        QCOMPARE(
+            apertureSettingLabel->text(), QStringLiteral("Abertura (f/)"));
+        QCOMPARE(isoInput->y(), exposureInput->y());
+        QCOMPARE(exposureInput->y(), apertureInput->y());
+        QVERIFY(isoInput->x() < exposureInput->x());
+        QVERIFY(exposureInput->x() < apertureInput->x());
         QVERIFY(countInput);
         QVERIFY(prepareButton);
+        auto* reconnectButton =
+            capturePage->findChild<QPushButton*>(QStringLiteral("reconnectCameraButton"));
+        auto* cameraConnectionStatus =
+            capturePage->findChild<QLabel*>(QStringLiteral("cameraConnectionStatus"));
+        QVERIFY(reconnectButton);
+        QVERIFY(cameraConnectionStatus);
+        reconnectButton->click();
+        QTRY_COMPARE_WITH_TIMEOUT(
+            cameraConnectionStatus->text(),
+            QStringLiteral("Câmera simulada conectada"),
+            3000);
+        auto* statisticsLabel =
+            capturePage->findChild<QLabel*>(QStringLiteral("captureStatistics"));
+        QVERIFY(statisticsLabel);
+        QTRY_VERIFY2_WITH_TIMEOUT(
+            statisticsLabel->text().contains(QStringLiteral("Sessão: 0 concluídos")),
+            qPrintable(statisticsLabel->text()),
+            3000);
         QVERIFY(exposureInput->minimum() >= 0.001);
         QVERIFY(exposureInput->maximum() <= 1800.0);
         frameTypeInput->setCurrentIndex(0);
@@ -857,20 +956,11 @@ private slots:
                 QStringLiteral("captureExecutionThread"));
             return !thread || !thread->isRunning();
         }(), 3000);
-        auto* statisticsLabel =
-            window.findChild<QLabel*>(QStringLiteral("captureStatistics"));
-        QVERIFY(statisticsLabel);
         const QString statisticsText = statisticsLabel->text();
         QVERIFY(statisticsText.contains(QStringLiteral("Sessão: 3 concluídos")));
         QVERIFY(statisticsText.contains(QStringLiteral("Light: 3")));
         QVERIFY(statisticsText.contains(QStringLiteral("6.00 s de exposição")));
-        const QString expectedNightDate = QDate::currentDate().toString(QStringLiteral("dd/MM/yyyy"));
-        QVERIFY(statisticsText.contains(QStringLiteral("Noite %1: 3 concluídos").arg(expectedNightDate)));
-        auto* sequenceMetrics =
-            window.findChild<QLabel*>(QStringLiteral("captureSequenceMetrics"));
-        QVERIFY(sequenceMetrics);
-        QVERIFY(sequenceMetrics->text().contains(QStringLiteral("Pendentes: 0")));
-        QVERIFY(sequenceMetrics->text().contains(QStringLiteral("Falhas: 0")));
+        QCOMPARE(sessionStatisticsCard->layout()->count(), 2);
         auto* previewStatus =
             window.findChild<QLabel*>(QStringLiteral("capturePreviewStatus"));
         QVERIFY(previewStatus);
@@ -878,6 +968,12 @@ private slots:
             previewStatus->text(),
             QStringLiteral("Último quadro concluído."),
             3000);
+        auto* previewMetadata =
+            window.findChild<QLabel*>(QStringLiteral("capturePreviewMetadata"));
+        QVERIFY(previewMetadata);
+        QVERIFY(previewMetadata->text().contains(QStringLiteral("Tipo: Light")));
+        QVERIFY(previewMetadata->text().contains(QStringLiteral("ISO: 800")));
+        QVERIFY(previewMetadata->text().contains(QStringLiteral("Exposição: 2.000 s")));
 
         const auto sessions = repository.findAll();
         QCOMPARE(sessions.size(), std::size_t{1});
@@ -900,6 +996,26 @@ private slots:
                     1u}),
             std::invalid_argument);
         QCOMPARE(captureRunRepository.findBySessionId(sessions.front().session.id()).size(), std::size_t{1});
+        auto* libraryNavigation =
+            window.findChild<QPushButton*>(QStringLiteral("libraryNavigationButton"));
+        auto* sessionList = window.findChild<QListWidget*>(QStringLiteral("sessionList"));
+        QVERIFY(libraryNavigation);
+        QVERIFY(sessionList);
+        libraryNavigation->click();
+        QCOMPARE(sessionList->count(), 1);
+        QVERIFY(QMetaObject::invokeMethod(
+            sessionList,
+            "itemActivated",
+            Qt::DirectConnection,
+            Q_ARG(QListWidgetItem*, sessionList->item(0))));
+        QCOMPARE(pages->currentWidget()->objectName(), QStringLiteral("captureConfigurationPage"));
+        auto* reopenedStatisticsLabel =
+            window.findChild<QLabel*>(QStringLiteral("captureStatistics"));
+        QVERIFY(reopenedStatisticsLabel);
+        QTRY_VERIFY2_WITH_TIMEOUT(
+            reopenedStatisticsLabel->text().contains(QStringLiteral("Sessão: 3 concluídos")),
+            qPrintable(reopenedStatisticsLabel->text()),
+            3000);
         window.close();
     }
 };

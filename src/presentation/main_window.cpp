@@ -3,8 +3,11 @@
 #include "app/application_metadata.h"
 #include "application/capture_configuration_service.h"
 #include "application/capture_preview_service.h"
+#include "application/capture_statistics_service.h"
 #include "application/session_recovery_service.h"
 #include "application/session_service.h"
+#include "infrastructure/persistence/sqlite_database.h"
+#include "infrastructure/persistence/sqlite_repositories.h"
 #include "presentation/capture_worker.h"
 #include "presentation/dialogs/session_configuration_dialog.h"
 #include "presentation/dialogs/session_recovery_dialog.h"
@@ -17,6 +20,7 @@
 #include <QBoxLayout>
 #include <QCloseEvent>
 #include <QDateTime>
+#include <QDir>
 #include <QFrame>
 #include <QFutureWatcher>
 #include <QHBoxLayout>
@@ -34,11 +38,115 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <exception>
+#include <optional>
+#include <QStringList>
 #include <utility>
 #include <vector>
+
+namespace {
+
+struct CameraReconnectResult
+{
+    std::optional<domain::CameraCapabilities> capabilities;
+    std::optional<domain::CameraSettings> settings;
+    QString error;
+};
+
+struct SessionStatisticsResult
+{
+    QString text;
+    QString error;
+};
+
+QString formatSessionStatistics(const application::CaptureStatistics& statistics)
+{
+    const std::array<QString, 5> types{{
+        QStringLiteral("Light"),
+        QStringLiteral("Dark"),
+        QStringLiteral("Flat"),
+        QStringLiteral("Bias"),
+        QStringLiteral("Dark Flat")
+    }};
+    QStringList frameCounts;
+    for (std::size_t index = 0; index < types.size(); ++index) {
+        frameCounts.push_back(QStringLiteral("%1: %2")
+                                  .arg(types[index])
+                                  .arg(statistics.completedFramesByType[index]));
+    }
+
+    const QString exposure = QStringLiteral("%1 s").arg(
+        static_cast<double>(statistics.exposureMicroseconds) / 1'000'000.0,
+        0,
+        'f',
+        2);
+    QString lastCapture = QStringLiteral("nenhuma");
+    if (statistics.lastCapturedAt) {
+        const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+            statistics.lastCapturedAt->time_since_epoch()).count();
+        lastCapture = QDateTime::fromMSecsSinceEpoch(milliseconds)
+                          .toLocalTime()
+                          .toString(QStringLiteral("dd/MM/yyyy HH:mm:ss"));
+    }
+
+    return QStringLiteral(
+               "Sessão: %1 concluídos (%2) · %3 de exposição · %4 sequência(s) · "
+               "%5 falha(s) · última captura: %6")
+        .arg(statistics.completedFrameCount)
+        .arg(frameCounts.join(QStringLiteral(", ")))
+        .arg(exposure)
+        .arg(statistics.sequenceCount)
+        .arg(statistics.failedFrameCount)
+        .arg(lastCapture);
+}
+
+QString previewMetadata(const application::LatestCapturePreview& preview)
+{
+    const auto frameTypeName = [](domain::FrameType type) {
+        switch (type) {
+        case domain::FrameType::Light:
+            return QStringLiteral("Light");
+        case domain::FrameType::Dark:
+            return QStringLiteral("Dark");
+        case domain::FrameType::Flat:
+            return QStringLiteral("Flat");
+        case domain::FrameType::Bias:
+            return QStringLiteral("Bias");
+        case domain::FrameType::DarkFlat:
+            return QStringLiteral("Dark Flat");
+        }
+        return QStringLiteral("Desconhecido");
+    };
+
+    QString iso = QStringLiteral("—");
+    if (preview.frame.iso()) {
+        iso = QString::number(*preview.frame.iso());
+    }
+    QString exposure = QStringLiteral("—");
+    if (preview.frame.exposure()) {
+        exposure = QStringLiteral("%1 s").arg(
+            static_cast<double>(preview.frame.exposure()->count()) / 1'000'000.0,
+            0,
+            'f',
+            3);
+    }
+    QString capturedAt = QStringLiteral("—");
+    if (preview.frame.capturedAt()) {
+        const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+            preview.frame.capturedAt()->time_since_epoch()).count();
+        capturedAt = QDateTime::fromMSecsSinceEpoch(milliseconds)
+                         .toLocalTime()
+                         .toString(QStringLiteral("dd/MM/yyyy HH:mm:ss"));
+    }
+
+    return QStringLiteral("Tipo: %1\nISO: %2\nExposição: %3\nData/Hora: %4")
+        .arg(frameTypeName(preview.frame.type()), iso, exposure, capturedAt);
+}
+
+} // namespace
 
 MainWindow::MainWindow(
     application::SessionService& sessionService,
@@ -57,6 +165,7 @@ MainWindow::MainWindow(
     , capturePreviewService_(capturePreviewService)
 {
     setWindowTitle(applicationTitle());
+    setMinimumSize(1024, 720);
     resize(1440, 900);
 
     QPalette windowPalette = palette();
@@ -184,18 +293,6 @@ MainWindow::MainWindow(
     connect(sessionsView_, &presentation::SessionsView::showInformationRequested, this, &MainWindow::showSessionInformation);
     connect(sessionsView_, &presentation::SessionsView::deleteSessionRequested, this, &MainWindow::deleteSession);
 
-    captureUiTimer_ = new QTimer(this);
-    captureUiTimer_->setInterval(1000);
-    connect(captureUiTimer_, &QTimer::timeout, this, [this] {
-        if (captureConfigurationView_ && captureElapsedTimer_.isValid()) {
-            const qint64 elapsedSeconds = captureElapsedTimer_.elapsed() / 1000;
-            captureConfigurationView_->setElapsedTime(
-                QStringLiteral("Tempo decorrido: %1:%2")
-                    .arg(elapsedSeconds / 60, 2, 10, QLatin1Char('0'))
-                    .arg(elapsedSeconds % 60, 2, 10, QLatin1Char('0')));
-        }
-    });
-
     sequencesButton->setEnabled(false);
     settingsButton->setEnabled(false);
 
@@ -230,6 +327,11 @@ MainWindow::MainWindow(
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    if (cameraReconnectPending_) {
+        closeAfterCameraReconnect_ = true;
+        event->ignore();
+        return;
+    }
     if (captureThread_) {
         closeAfterCapture_ = true;
         requestCaptureStop();
@@ -266,6 +368,7 @@ void MainWindow::openSessionConfigurationDialog()
 void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool returnHome)
 {
     activeSessionId_ = sessionId;
+    pendingRecoveryRunId_.reset();
     domain::CameraCapabilities capabilities;
     domain::CameraSettings currentSettings;
     try {
@@ -296,11 +399,28 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
 
     captureConfigurationView_ = new presentation::CaptureConfigurationView(pages_);
     captureConfigurationView_->setCapabilities(capabilities, currentSettings);
+    captureConfigurationView_->setBackButtonText(
+        returnHome
+            ? QStringLiteral("⌂  Menu Principal")
+            : QStringLiteral("‹  Biblioteca"));
     captureConfigurationView_->setLiveViewStatusText(liveViewStatusText_);
 
     connect(captureConfigurationView_, &presentation::CaptureConfigurationView::startCaptureRequested,
             this, [this, sessionId](domain::CaptureSettings settings) {
         try {
+            if (pendingRecoveryRunId_) {
+                const auto captureRun =
+                    captureConfigurationService_.findCaptureRun(*pendingRecoveryRunId_);
+                if (!captureRun || captureRun->sessionId() != sessionId
+                    || captureRun->state() == domain::CaptureRunState::Completed
+                    || captureRun->state() == domain::CaptureRunState::Failed) {
+                    throw std::runtime_error(
+                        "A sequência selecionada não pode mais ser retomada; reabra a sessão.");
+                }
+                startCapture(*captureRun);
+                pendingRecoveryRunId_.reset();
+                return;
+            }
             const auto captureRun = captureConfigurationService_.configureSequence(sessionId, settings);
             captureConfigurationView_->setValidationError({});
             startCapture(captureRun);
@@ -310,6 +430,77 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
     });
     connect(captureConfigurationView_, &presentation::CaptureConfigurationView::stopCaptureRequested,
             this, &MainWindow::requestCaptureStop);
+    connect(captureConfigurationView_,
+            &presentation::CaptureConfigurationView::reconnectCameraRequested,
+            this,
+            [this] {
+        if (cameraReconnectPending_ || captureThread_ || liveViewOperationPending_ || liveViewActive_) {
+            return;
+        }
+        cameraReconnectPending_ = true;
+        captureConfigurationView_->setCameraConnectionStatus(
+            QStringLiteral("Reconectando câmera…"),
+            true);
+        updateLiveViewControls();
+
+        auto* watcher = new QFutureWatcher<CameraReconnectResult>(this);
+        connect(watcher, &QFutureWatcher<CameraReconnectResult>::finished, this,
+                [this, watcher] {
+            const CameraReconnectResult result = watcher->result();
+            watcher->deleteLater();
+            cameraReconnectPending_ = false;
+            if (!result.capabilities || !result.settings) {
+                captureConfigurationView_->setCameraConnectionStatus(
+                    QStringLiteral("Não foi possível conectar à câmera"),
+                    false);
+                captureConfigurationView_->setValidationError(result.error);
+                liveViewAvailable_ = false;
+                liveViewActive_ = false;
+                liveViewStatusText_ = QStringLiteral("Câmera desconectada.");
+                captureConfigurationView_->setLiveViewStatusText(liveViewStatusText_);
+            } else {
+                captureConfigurationView_->setCapabilities(
+                    *result.capabilities,
+                    *result.settings);
+                liveViewAvailable_ = result.capabilities->liveView
+                    == domain::CapabilityState::Supported;
+                liveViewActive_ = false;
+                liveViewStatusText_ = liveViewAvailable_
+                    ? QStringLiteral("Live View desligado.")
+                    : QStringLiteral("Live View indisponível nesta câmera.");
+                captureConfigurationView_->setLiveViewStatusText(liveViewStatusText_);
+                captureConfigurationView_->setCameraConnectionStatus(
+                    QStringLiteral("Câmera simulada conectada"),
+                    true);
+            }
+            updateLiveViewControls();
+
+            if (closeAfterCameraReconnect_) {
+                closeAfterCameraReconnect_ = false;
+                QTimer::singleShot(0, this, &QWidget::close);
+            }
+        });
+        watcher->setFuture(QtConcurrent::run([this] {
+            try {
+                auto capabilities = captureConfigurationService_.reconnectCamera();
+                auto settings = captureConfigurationService_.currentCameraSettings();
+                return CameraReconnectResult{
+                    std::move(capabilities),
+                    std::move(settings),
+                    {}};
+            } catch (const std::exception& error) {
+                return CameraReconnectResult{
+                    std::nullopt,
+                    std::nullopt,
+                    QString::fromUtf8(error.what())};
+            } catch (...) {
+                return CameraReconnectResult{
+                    std::nullopt,
+                    std::nullopt,
+                    QStringLiteral("Ocorreu um erro inesperado ao reconectar à câmera.")};
+            }
+        }));
+    });
     connect(captureConfigurationView_, &presentation::CaptureConfigurationView::backRequested,
             this, [this, returnHome] {
         if (returnHome) {
@@ -324,13 +515,74 @@ void MainWindow::showCaptureConfigurationPage(const std::string& sessionId, bool
             this, [this] { beginLiveViewOperation(false); });
 
     pages_->addWidget(captureConfigurationView_);
+    if (auto* sidebar = findChild<QFrame*>(QStringLiteral("sidebar"))) {
+        sidebar->hide();
+    }
     pages_->setCurrentWidget(captureConfigurationView_);
     setNavigationSelection(returnHome);
     updateLiveViewControls();
 
     QTimer::singleShot(0, this, [this, sessionId] {
+        loadSessionStatistics(sessionId);
+    });
+    QTimer::singleShot(0, this, [this, sessionId] {
         loadCapturePreview(sessionId);
     });
+}
+
+void MainWindow::loadSessionStatistics(const std::string& sessionId)
+{
+    if (!captureConfigurationView_) {
+        return;
+    }
+
+    const quint64 requestId = ++statisticsRequestId_;
+    const QString databasePath = QDir(applicationDataDirectory_)
+                                     .filePath(QStringLiteral("astrocapture.sqlite3"));
+    const QDate acquisitionDate = QDate::currentDate();
+    auto* watcher = new QFutureWatcher<SessionStatisticsResult>(this);
+    connect(watcher, &QFutureWatcher<SessionStatisticsResult>::finished, this,
+            [this, watcher, requestId, sessionId] {
+        const SessionStatisticsResult result = watcher->result();
+        watcher->deleteLater();
+        if (requestId != statisticsRequestId_
+            || !captureConfigurationView_
+            || activeSessionId_ != sessionId) {
+            return;
+        }
+        if (!result.error.isEmpty()) {
+            captureConfigurationView_->setStatistics(
+                QStringLiteral("Não foi possível carregar as informações da sessão: %1")
+                    .arg(result.error));
+            return;
+        }
+        captureConfigurationView_->setStatistics(result.text);
+    });
+    watcher->setFuture(QtConcurrent::run([databasePath, sessionId, acquisitionDate] {
+        try {
+            infrastructure::SqliteDatabase database(databasePath);
+            database.open();
+            infrastructure::SqliteCaptureRunRepository captureRunRepository(database);
+            infrastructure::SqliteFrameRepository frameRepository(database);
+            application::CaptureStatisticsService statisticsService(
+                captureRunRepository,
+                frameRepository);
+            const auto statistics = statisticsService.forSession(
+                sessionId,
+                std::chrono::year{acquisitionDate.year()}
+                    / static_cast<unsigned int>(acquisitionDate.month())
+                    / static_cast<unsigned int>(acquisitionDate.day()));
+            return SessionStatisticsResult{
+                formatSessionStatistics(statistics.session),
+                {}};
+        } catch (const std::exception& error) {
+            return SessionStatisticsResult{{}, QString::fromUtf8(error.what())};
+        } catch (...) {
+            return SessionStatisticsResult{
+                {},
+                QStringLiteral("Ocorreu um erro inesperado.")};
+        }
+    }));
 }
 
 void MainWindow::beginLiveViewOperation(bool start)
@@ -409,7 +661,8 @@ void MainWindow::beginLiveViewOperation(bool start)
 void MainWindow::updateLiveViewControls()
 {
     const bool captureRunning = captureThread_ != nullptr;
-    const bool cameraBusy = captureRunning || liveViewOperationPending_ || liveViewActive_;
+    const bool cameraBusy = captureRunning || liveViewOperationPending_ || liveViewActive_
+        || cameraReconnectPending_;
 
     if (captureConfigurationView_) {
         captureConfigurationView_->setLiveViewStatusText(liveViewStatusText_);
@@ -417,7 +670,8 @@ void MainWindow::updateLiveViewControls()
             liveViewAvailable_,
             liveViewActive_,
             liveViewOperationPending_,
-            captureRunning);
+            captureRunning,
+            cameraReconnectPending_);
     }
 
     if (homeNavigationButton_) {
@@ -435,22 +689,29 @@ void MainWindow::loadCapturePreview(const std::string& sessionId)
     }
     if (!capturePreviewService_) {
         captureConfigurationView_->clearPreview();
+        captureConfigurationView_->setPreviewMetadata(
+            QStringLiteral("Tipo: —\nISO: —\nExposição: —\nData/Hora: —"));
         captureConfigurationView_->setPreviewStatus(QStringLiteral("Nenhuma imagem disponível."));
         return;
     }
 
     try {
-        const auto imagePath = capturePreviewService_->latestCompletedImagePath(sessionId);
-        if (!imagePath) {
+        const auto preview = capturePreviewService_->latestCompletedFrame(sessionId);
+        if (!preview || !preview->frame.filePath()) {
             ++previewRequestId_;
             captureConfigurationView_->clearPreview();
+            captureConfigurationView_->setPreviewMetadata(
+                QStringLiteral("Tipo: —\nISO: —\nExposição: —\nData/Hora: —"));
             captureConfigurationView_->setPreviewStatus(QStringLiteral("Nenhuma imagem disponível."));
             return;
         }
-        decodeCapturePreview(QString::fromStdString(imagePath->string()));
+        captureConfigurationView_->setPreviewMetadata(previewMetadata(*preview));
+        decodeCapturePreview(QString::fromStdString(preview->frame.filePath()->string()));
     } catch (const std::exception& error) {
         ++previewRequestId_;
         captureConfigurationView_->clearPreview();
+        captureConfigurationView_->setPreviewMetadata(
+            QStringLiteral("Tipo: —\nISO: —\nExposição: —\nData/Hora: —"));
         captureConfigurationView_->setPreviewStatus(
             QStringLiteral("Não foi possível localizar a pré-visualização: %1")
                 .arg(QString::fromUtf8(error.what())));
@@ -513,11 +774,6 @@ void MainWindow::startCapture(domain::CaptureRun captureRun)
         throw std::logic_error("Stop live view before starting a capture sequence");
     }
 
-    captureExposureText_ = QStringLiteral("%1 s").arg(
-        static_cast<double>(captureRun.settings().exposure.count()) / 1'000'000.0,
-        0,
-        'f',
-        3);
     captureStopRequested_ = std::make_shared<std::atomic_bool>(false);
     auto* worker = new presentation::CaptureWorker(
         applicationDataDirectory_,
@@ -530,26 +786,6 @@ void MainWindow::startCapture(domain::CaptureRun captureRun)
 
     worker->moveToThread(thread);
     connect(thread, &QThread::started, worker, &presentation::CaptureWorker::execute);
-    connect(
-        worker,
-        &presentation::CaptureWorker::progressChanged,
-        this,
-        [this](quint32 completed,
-               quint32 planned,
-               quint32 failed,
-               const QString& details,
-               qint64 elapsedMilliseconds) {
-            if (captureConfigurationView_) {
-                captureConfigurationView_->updateProgress(
-                    completed,
-                    planned,
-                    failed,
-                    captureExposureText_,
-                    details,
-                    elapsedMilliseconds);
-            }
-        },
-        Qt::QueuedConnection);
     connect(
         worker,
         &presentation::CaptureWorker::statisticsChanged,
@@ -565,19 +801,20 @@ void MainWindow::startCapture(domain::CaptureRun captureRun)
         &presentation::CaptureWorker::previewAvailable,
         this,
         [this](const QString& imagePath) {
-            decodeCapturePreview(imagePath);
+            Q_UNUSED(imagePath);
+            loadCapturePreview(activeSessionId_);
         },
         Qt::QueuedConnection);
     connect(
         worker,
         &presentation::CaptureWorker::captureCompleted,
         this,
-        [this](quint32 completed, bool paused) {
+        [this](quint32, bool paused) {
             if (captureConfigurationView_) {
                 captureConfigurationView_->setCaptureStatus(
                     paused
-                        ? QStringLiteral("Captura pausada · %1 quadros concluídos.").arg(completed)
-                        : QStringLiteral("Captura concluída · %1 quadros salvos.").arg(completed));
+                        ? QStringLiteral("Captura pausada.")
+                        : QStringLiteral("Captura concluída."));
             }
         },
         Qt::QueuedConnection);
@@ -611,7 +848,6 @@ void MainWindow::startCapture(domain::CaptureRun captureRun)
         homeNavigationButton_->setEnabled(true);
         libraryNavigationButton_->setEnabled(true);
         captureStopRequested_.reset();
-        captureUiTimer_->stop();
         if (closeAfterCapture_) {
             QTimer::singleShot(0, this, &QWidget::close);
         }
@@ -619,10 +855,8 @@ void MainWindow::startCapture(domain::CaptureRun captureRun)
     });
 
     if (captureConfigurationView_) {
-        captureConfigurationView_->setCaptureStarted(captureExposureText_);
+        captureConfigurationView_->setCaptureStarted();
     }
-    captureElapsedTimer_.start();
-    captureUiTimer_->start();
     updateLiveViewControls();
     homeNavigationButton_->setEnabled(false);
     libraryNavigationButton_->setEnabled(false);
@@ -693,7 +927,12 @@ void MainWindow::inspectSessionRecovery(const domain::SessionRecord& session)
             application::RecoveryDecision::Continue,
             *selectedRunId);
         showCaptureConfigurationPage(session.session.id(), false);
-        startCapture(*captureRun);
+        if (!captureConfigurationView_) {
+            return;
+        }
+        pendingRecoveryRunId_ = *selectedRunId;
+        captureConfigurationView_->setCaptureStartButtonText(
+            QStringLiteral("▶  Continuar Captura"));
         return;
     }
     if (choice == presentation::SessionRecoveryDialog::NewSequenceCode) {
@@ -785,6 +1024,9 @@ void MainWindow::deleteSession(const std::string& sessionId)
 
 void MainWindow::showHomePage()
 {
+    if (auto* sidebar = findChild<QFrame*>(QStringLiteral("sidebar"))) {
+        sidebar->show();
+    }
     setNavigationSelection(true);
     homeView_->refresh();
     pages_->setCurrentWidget(homeView_);
@@ -792,6 +1034,9 @@ void MainWindow::showHomePage()
 
 void MainWindow::showSessionsPage()
 {
+    if (auto* sidebar = findChild<QFrame*>(QStringLiteral("sidebar"))) {
+        sidebar->show();
+    }
     setNavigationSelection(false);
     sessionsView_->refresh();
     pages_->setCurrentWidget(sessionsView_);

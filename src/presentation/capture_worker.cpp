@@ -233,12 +233,7 @@ void CaptureWorker::execute()
                     / static_cast<unsigned int>(acquisitionDate.month())
                     / static_cast<unsigned int>(acquisitionDate.day()));
             emit statisticsChanged(
-                formatStatistics(QStringLiteral("Sessão"), snapshot.session)
-                + QLatin1Char('\n')
-                + formatStatistics(
-                    QStringLiteral("Noite %1").arg(acquisitionDate.toString(
-                        QStringLiteral("dd/MM/yyyy"))),
-                    snapshot.night));
+                formatStatistics(QStringLiteral("Sessão"), snapshot.session));
         };
         emitStatistics();
 

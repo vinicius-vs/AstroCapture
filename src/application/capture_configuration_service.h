@@ -19,6 +19,7 @@ public:
 
     domain::CameraCapabilities cameraCapabilities();
     domain::CameraSettings currentCameraSettings();
+    domain::CameraCapabilities reconnectCamera();
     domain::CaptureRun configureSequence(
         const domain::SessionId& sessionId,
         domain::CaptureSettings settings);

@@ -13,8 +13,18 @@ CapturePreviewService::CapturePreviewService(
 std::optional<std::filesystem::path> CapturePreviewService::latestCompletedImagePath(
     const domain::SessionId& sessionId) const
 {
+    const auto preview = latestCompletedFrame(sessionId);
+    if (!preview || !preview->frame.filePath()) {
+        return std::nullopt;
+    }
+    return preview->frame.filePath();
+}
+
+std::optional<LatestCapturePreview> CapturePreviewService::latestCompletedFrame(
+    const domain::SessionId& sessionId) const
+{
     std::optional<domain::Timestamp> latestCaptureTime;
-    std::optional<std::filesystem::path> latestImagePath;
+    std::optional<LatestCapturePreview> latestPreview;
     for (const domain::CaptureRun& captureRun : captureRunRepository_.findBySessionId(sessionId)) {
         for (const domain::Frame& frame : frameRepository_.findByCaptureRunId(captureRun.id())) {
             if (frame.state() != domain::FrameState::Completed
@@ -24,11 +34,11 @@ std::optional<std::filesystem::path> CapturePreviewService::latestCompletedImage
             }
             if (!latestCaptureTime || *latestCaptureTime < *frame.capturedAt()) {
                 latestCaptureTime = frame.capturedAt();
-                latestImagePath = frame.filePath();
+                latestPreview = LatestCapturePreview{frame};
             }
         }
     }
-    return latestImagePath;
+    return latestPreview;
 }
 
 } // namespace application

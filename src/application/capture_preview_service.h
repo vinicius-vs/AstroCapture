@@ -9,6 +9,11 @@
 
 namespace application {
 
+struct LatestCapturePreview
+{
+    domain::Frame frame;
+};
+
 class CapturePreviewService final
 {
 public:
@@ -17,6 +22,8 @@ public:
         domain::FrameRepository& frameRepository);
 
     std::optional<std::filesystem::path> latestCompletedImagePath(
+        const domain::SessionId& sessionId) const;
+    std::optional<LatestCapturePreview> latestCompletedFrame(
         const domain::SessionId& sessionId) const;
 
 private:

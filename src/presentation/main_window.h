@@ -2,12 +2,12 @@
 
 #include "domain/camera.h"
 
-#include <QElapsedTimer>
 #include <QMainWindow>
 #include <QString>
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <string>
 
 class QCloseEvent;
@@ -55,6 +55,7 @@ private:
     void showCaptureConfigurationPage(const std::string& sessionId, bool returnHome);
     void startCapture(domain::CaptureRun captureRun);
     void inspectSessionRecovery(const domain::SessionRecord& session);
+    void loadSessionStatistics(const std::string& sessionId);
     void loadCapturePreview(const std::string& sessionId);
     void decodeCapturePreview(const QString& imagePath);
     void beginLiveViewOperation(bool start);
@@ -83,16 +84,17 @@ private:
     QPushButton* libraryNavigationButton_{};
 
     QThread* captureThread_{};
-    QTimer* captureUiTimer_{};
-    QElapsedTimer captureElapsedTimer_;
-    QString captureExposureText_;
     QString liveViewStatusText_;
     std::shared_ptr<std::atomic_bool> captureStopRequested_;
     std::string activeSessionId_;
+    std::optional<std::string> pendingRecoveryRunId_;
     quint64 previewRequestId_{};
+    quint64 statisticsRequestId_{};
     bool liveViewAvailable_{};
     bool liveViewActive_{};
     bool liveViewOperationPending_{};
+    bool cameraReconnectPending_{};
+    bool closeAfterCameraReconnect_{};
     bool closeAfterCapture_{};
     bool closeAfterLiveViewStop_{};
 };

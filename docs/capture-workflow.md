@@ -150,6 +150,8 @@ Se houver uma sequência incompleta, o sistema deve oferecer três opções:
 - **Nova sequência:** preservar a sequência anterior e criar outra.
 - **Cancelar:** não iniciar nenhuma captura.
 
+Selecionar **Continuar** apenas prepara a retomada e abre a tela da sessão. A captura só começa quando o usuário aciona explicitamente o botão de continuação nessa tela.
+
 Quadros já concluídos não devem ser capturados novamente automaticamente.
 
 O serviço de recuperação fornece o relatório e registra a decisão selecionada; a integração desse serviço com a tela de abertura de sessões será feita junto com a implementação desse fluxo de interface.
