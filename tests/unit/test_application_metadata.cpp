@@ -864,7 +864,8 @@ private slots:
         QVERIFY(statisticsText.contains(QStringLiteral("Sessão: 3 concluídos")));
         QVERIFY(statisticsText.contains(QStringLiteral("Light: 3")));
         QVERIFY(statisticsText.contains(QStringLiteral("6.00 s de exposição")));
-        QVERIFY(statisticsText.contains(QStringLiteral("Noite 25/10/2026: 3 concluídos")));
+        const QString expectedNightDate = QDate::currentDate().toString(QStringLiteral("dd/MM/yyyy"));
+        QVERIFY(statisticsText.contains(QStringLiteral("Noite %1: 3 concluídos").arg(expectedNightDate)));
         auto* sequenceMetrics =
             window.findChild<QLabel*>(QStringLiteral("captureSequenceMetrics"));
         QVERIFY(sequenceMetrics);

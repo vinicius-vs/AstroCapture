@@ -50,6 +50,26 @@ add_executable(astrocapture
     src/infrastructure/storage/image_storage.h
     src/presentation/capture_worker.cpp
     src/presentation/capture_worker.h
+    src/presentation/styles/theme.cpp
+    src/presentation/styles/theme.h
+    src/presentation/widgets/dark_combo_box.cpp
+    src/presentation/widgets/dark_combo_box.h
+    src/presentation/widgets/resize_aware_widget.cpp
+    src/presentation/widgets/resize_aware_widget.h
+    src/presentation/widgets/responsive_home_scroll_area.cpp
+    src/presentation/widgets/responsive_home_scroll_area.h
+    src/presentation/widgets/starfield_banner.cpp
+    src/presentation/widgets/starfield_banner.h
+    src/presentation/dialogs/session_configuration_dialog.cpp
+    src/presentation/dialogs/session_configuration_dialog.h
+    src/presentation/dialogs/session_recovery_dialog.cpp
+    src/presentation/dialogs/session_recovery_dialog.h
+    src/presentation/views/capture_configuration_view.cpp
+    src/presentation/views/capture_configuration_view.h
+    src/presentation/views/home_view.cpp
+    src/presentation/views/home_view.h
+    src/presentation/views/sessions_view.cpp
+    src/presentation/views/sessions_view.h
     src/presentation/main_window.cpp
     src/presentation/main_window.h
 )
@@ -106,6 +126,26 @@ if(BUILD_TESTING)
         src/infrastructure/logging/json_lines_logging_service.h
         src/presentation/capture_worker.cpp
         src/presentation/capture_worker.h
+        src/presentation/styles/theme.cpp
+        src/presentation/styles/theme.h
+        src/presentation/widgets/dark_combo_box.cpp
+        src/presentation/widgets/dark_combo_box.h
+        src/presentation/widgets/resize_aware_widget.cpp
+        src/presentation/widgets/resize_aware_widget.h
+        src/presentation/widgets/responsive_home_scroll_area.cpp
+        src/presentation/widgets/responsive_home_scroll_area.h
+        src/presentation/widgets/starfield_banner.cpp
+        src/presentation/widgets/starfield_banner.h
+        src/presentation/dialogs/session_configuration_dialog.cpp
+        src/presentation/dialogs/session_configuration_dialog.h
+        src/presentation/dialogs/session_recovery_dialog.cpp
+        src/presentation/dialogs/session_recovery_dialog.h
+        src/presentation/views/capture_configuration_view.cpp
+        src/presentation/views/capture_configuration_view.h
+        src/presentation/views/home_view.cpp
+        src/presentation/views/home_view.h
+        src/presentation/views/sessions_view.cpp
+        src/presentation/views/sessions_view.h
         src/presentation/main_window.cpp
         src/presentation/main_window.h
         tests/unit/test_application_metadata.cpp

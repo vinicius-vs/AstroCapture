@@ -25,6 +25,18 @@ int main(int argc, char* argv[])
 {
     QApplication application(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("AstroCapture"));
+
+    QPalette darkPalette = application.palette();
+    darkPalette.setColor(QPalette::Window, QColor(QStringLiteral("#050d13")));
+    darkPalette.setColor(QPalette::WindowText, QColor(QStringLiteral("#e5edf3")));
+    darkPalette.setColor(QPalette::Base, QColor(QStringLiteral("#071119")));
+    darkPalette.setColor(QPalette::AlternateBase, QColor(QStringLiteral("#09151d")));
+    darkPalette.setColor(QPalette::Text, QColor(QStringLiteral("#e5edf3")));
+    darkPalette.setColor(QPalette::Button, QColor(QStringLiteral("#09151d")));
+    darkPalette.setColor(QPalette::ButtonText, QColor(QStringLiteral("#e5edf3")));
+    darkPalette.setColor(QPalette::Highlight, QColor(QStringLiteral("#0c2928")));
+    darkPalette.setColor(QPalette::HighlightedText, QColor(QStringLiteral("#49e3b6")));
+    application.setPalette(darkPalette);
     std::unique_ptr<infrastructure::JsonLinesLoggingService> loggingService;
     QString dataDirectory;
 

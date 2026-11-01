@@ -11,18 +11,15 @@
 #include <string>
 
 class QCloseEvent;
-class QLabel;
-class QListWidget;
-class QProgressBar;
 class QPushButton;
-class QTimer;
-class QThread;
 class QStackedWidget;
+class QThread;
+class QTimer;
 class QWidget;
 
 namespace application {
-class CapturePreviewService;
 class CaptureConfigurationService;
+class CapturePreviewService;
 class SessionRecoveryService;
 class SessionService;
 }
@@ -32,8 +29,16 @@ class CaptureRun;
 struct SessionRecord;
 }
 
+namespace presentation {
+class CaptureConfigurationView;
+class HomeView;
+class SessionsView;
+}
+
 class MainWindow final : public QMainWindow
 {
+    Q_OBJECT
+
 public:
     explicit MainWindow(
         application::SessionService& sessionService,
@@ -46,8 +51,6 @@ public:
 
 private:
     void closeEvent(QCloseEvent* event) override;
-    QWidget* createHomePage();
-    QWidget* createSessionsPage();
     void openSessionConfigurationDialog();
     void showCaptureConfigurationPage(const std::string& sessionId, bool returnHome);
     void startCapture(domain::CaptureRun captureRun);
@@ -63,7 +66,6 @@ private:
     void showHomePage();
     void showSessionsPage();
     void setNavigationSelection(bool homeSelected);
-    void refreshSessions();
 
     application::SessionService& sessionService_;
     application::CaptureConfigurationService& captureConfigurationService_;
@@ -71,39 +73,26 @@ private:
     QString applicationDataDirectory_;
     application::SessionRecoveryService* sessionRecoveryService_{};
     application::CapturePreviewService* capturePreviewService_{};
+
     QStackedWidget* pages_{};
-    QWidget* homePage_{};
-    QWidget* sessionsPage_{};
-    QWidget* captureConfigurationPage_{};
+    presentation::HomeView* homeView_{};
+    presentation::SessionsView* sessionsView_{};
+    presentation::CaptureConfigurationView* captureConfigurationView_{};
+
     QPushButton* homeNavigationButton_{};
     QPushButton* libraryNavigationButton_{};
-    QListWidget* sessionList_{};
-    QLabel* activeSessionLabel_{};
-    QLabel* captureStatusLabel_{};
-    QLabel* captureSequenceMetricsLabel_{};
-    QLabel* captureElapsedLabel_{};
-    QLabel* captureStatisticsLabel_{};
-    QLabel* capturePreviewImageLabel_{};
-    QLabel* capturePreviewStatusLabel_{};
-    QLabel* liveViewStatusLabel_{};
-    QProgressBar* captureProgressBar_{};
-    QPushButton* captureStartButton_{};
-    QPushButton* captureStopButton_{};
-    QPushButton* captureBackButton_{};
-    QPushButton* liveViewStartButton_{};
-    QPushButton* liveViewStopButton_{};
+
     QThread* captureThread_{};
     QTimer* captureUiTimer_{};
     QElapsedTimer captureElapsedTimer_;
     QString captureExposureText_;
     QString liveViewStatusText_;
     std::shared_ptr<std::atomic_bool> captureStopRequested_;
-    bool closeAfterCapture_{};
+    std::string activeSessionId_;
+    quint64 previewRequestId_{};
     bool liveViewAvailable_{};
     bool liveViewActive_{};
     bool liveViewOperationPending_{};
+    bool closeAfterCapture_{};
     bool closeAfterLiveViewStop_{};
-    bool captureExposureAvailable_{};
-    std::string activeSessionId_;
-    quint64 previewRequestId_{};
 };
